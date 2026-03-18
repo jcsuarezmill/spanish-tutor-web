@@ -1,218 +1,160 @@
 import streamlit as st
-import sqlite3
-import time
-import os
-from datetime import date
 from groq import Groq
 from gtts import gTTS
 import tempfile
+import os
+import json
 
-# ================= CONFIGURATION =================
-# Try to get keys from Streamlit Secrets (Cloud) or fallback to config.py (Local)
-try:
-    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-except:
-    try:
-        import config
-        GROQ_API_KEY = config.GROQ_API_KEY
-    except:
-        st.error("⚠️ API Key missing! Set it in .streamlit/secrets.toml or config.py")
-        GROQ_API_KEY = ""
+# ================= CONFIGURATION & STYLING =================
+st.set_page_config(page_title="Elite Spanish BPO Coach", page_icon="💼", layout="wide")
 
-client = Groq(api_key=GROQ_API_KEY)
-
-# ================= APP SETUP =================
-st.set_page_config(page_title="Spanish BPO Coach", page_icon="🇪🇸", layout="wide")
-
-# Custom CSS for Chat Interface
 st.markdown("""
-<style>
-    .stChatMessage { padding: 10px; border-radius: 10px; }
-    .stButton button { width: 100%; border-radius: 5px; }
-    .stAudio { width: 100%; }
-</style>
+    <style>
+    .main { background-color: #f5f7f9; }
+    .stChatMessage { border-radius: 15px; border: 1px solid #e0e0e0; margin-bottom: 10px; }
+    .coach-feedback { background-color: #e1f5fe; padding: 15px; border-left: 5px solid #0288d1; border-radius: 5px; }
+    .bpo-stat { font-size: 0.9rem; color: #666; font-weight: bold; }
+    </style>
 """, unsafe_allow_html=True)
 
-# ================= DATABASE =================
-def init_db():
-    conn = sqlite3.connect("spanish_web.db")
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY,
-            level TEXT DEFAULT 'A1',
-            xp INTEGER DEFAULT 0)''')
-    c.execute("INSERT OR IGNORE INTO users (id, level, xp) VALUES (1, 'A1', 0)")
-    c.execute('''CREATE TABLE IF NOT EXISTS vocab (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            word TEXT,
-            translation TEXT)''')
-    conn.commit()
-    conn.close()
+# ================= INITIALIZATION =================
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "current_track" not in st.session_state:
+    st.session_state.current_track = "General Conversation"
+if "level" not in st.session_state:
+    st.session_state.level = "B1"
 
-init_db()
+# API Setup
+try:
+    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+except:
+    st.error("Missing GROQ_API_KEY in secrets.")
+    st.stop()
 
-# ================= SESSION STATE =================
-if "mode" not in st.session_state: st.session_state.mode = "idle"
-if "messages" not in st.session_state: st.session_state.messages = []
-if "level" not in st.session_state: st.session_state.level = "A1"
-if "hangman" not in st.session_state: st.session_state.hangman = None
-if "current_lesson" not in st.session_state: st.session_state.current_lesson = None
+# ================= AI ENGINE (With Memory) =================
+def get_ai_response(user_input, track, level):
+    # Professional System Prompts based on Track
+    prompts = {
+        "General Conversation": f"You are a professional Spanish tutor. Level: {level}. Focus on natural flow and CEFR standards.",
+        "BPO: Customer Support": f"You are an angry or confused customer calling a BPO center. The user is the agent. Level: {level}. Use industry-specific terms (billing, troubleshooting).",
+        "VA: Executive Assistant": f"You are a busy US-based CEO. The user is your Spanish-speaking Virtual Assistant. Task: Manage my calendar and emails professionally in Spanish.",
+        "BPO: Real Estate": f"You are a property buyer/seller. The user is a Real Estate VA. Discuss listings, escrow, and viewings in Spanish.",
+        "Technical Support": f"You are a non-technical person with a major internet outage. The user must guide you through steps in Spanish."
+    }
 
-# ================= HELPERS =================
-def add_message(role, content, audio=False):
-    st.session_state.messages.append({"role": role, "content": content})
-    if audio and role == "assistant":
-        try:
-            tts = gTTS(text=content.replace("*", "").split("Feedback:")[0], lang='es')
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-                tts.save(fp.name)
-                st.session_state.messages[-1]["audio"] = fp.name
-        except: pass
+    system_message = {
+        "role": "system",
+        "content": f"{prompts[track]} \n\n"
+                   f"CRITICAL INSTRUCTIONS:\n"
+                   f"1. Stay in character during the dialogue.\n"
+                   f"2. At the end of every response, provide a 'COACH'S CORNER' section in English.\n"
+                   f"3. In Coach's Corner: List 3 corrections, 1 professional vocabulary word used, and a Tone Rating (1-10).\n"
+                   f"4. Format: [Character Dialogue] \n---\n[Coach's Corner]"
+    }
 
-def get_ai_response(prompt, system_prompt):
+    # Build memory context (Last 6 messages)
+    history = [system_message] + st.session_state.messages[-6:]
+    history.append({"role": "user", "content": user_input})
+
     try:
         completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
+            messages=history,
+            temperature=0.7,
+            max_tokens=1000
         )
         return completion.choices[0].message.content
-    except Exception as e: return f"Error: {e}"
+    except Exception as e:
+        return f"Error connecting to AI: {e}"
 
-# ================= LOGIC ENGINES =================
-def process_input(user_input):
-    mode = st.session_state.mode
-    level = st.session_state.level
-    
-    # 1. HANGMAN LOGIC
-    if mode == "hangman":
-        game = st.session_state.hangman
-        if len(user_input) != 1 or not user_input.isalpha():
-            add_message("assistant", "⚠️ Send ONE letter at a time.")
-            return
+# ================= HELPER FUNCTIONS =================
+def text_to_speech(text):
+    # Strip the Coach's Corner from audio
+    clean_text = text.split("---")[0].replace("*", "")
+    try:
+        tts = gTTS(text=clean_text, lang='es', slow=False)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+            tts.save(fp.name)
+            return fp.name
+    except:
+        return None
 
-        letter = user_input.lower()
-        if letter in game['guessed']:
-            add_message("assistant", "You already guessed that!")
-            return
-            
-        game['guessed'].append(letter)
-        if letter not in game['word']: game['tries'] -= 1
-        
-        # Build Display
-        display = " ".join([c if c in game['guessed'] else "_" for c in game['word']])
-        status = f"📝 Word: `{display}` | ❤️ Lives: {game['tries']} | 🚫 Used: {', '.join(game['guessed'])}"
-        
-        if "_" not in display:
-            add_message("assistant", f"🏆 **VICTORY!** The word was: {game['word']}\n\nStarting new game or click 'Exit' in sidebar.")
-            st.session_state.mode = "idle"
-        elif game['tries'] <= 0:
-            add_message("assistant", f"💀 **GAME OVER.** The word was: {game['word']}")
-            st.session_state.mode = "idle"
-        else:
-            add_message("assistant", status)
-        return
-
-    # 2. AI MODES
-    sys_msg = f"Role: Spanish Tutor. Level: {level}."
-    
-    if mode.startswith("sim_"):
-        personas = {
-            "sim_angry": "Role: ANGRY Customer (Billing).",
-            "sim_tech": "Role: Confused Grandma (No WiFi).",
-            "sim_medical": "Role: Patient in pain.",
-            "sim_insurance": "Role: Driver in car accident.",
-            "sim_realestate": "Role: Home Buyer (3 Bedroom).",
-            "sim_travel": "Role: Tourist (Missed Flight)."
-        }
-        sys_msg = f"{personas.get(mode, 'Customer')}. 1. Reply in Spanish. 2. Add '---'. 3. English Feedback."
-    
-    elif mode == "quiz": sys_msg = f"Generate a Spanish grammar multiple-choice question for Level {level}."
-    elif mode == "pronunciation": sys_msg = "Rate the user's Spanish text (0-10) and correct grammar."
-    elif mode == "script": sys_msg = "Write a BPO script for this topic."
-    elif mode == "translator": sys_msg = "Translate to Spanish/English."
-    
-    response = get_ai_response(user_input, sys_msg)
-    
-    # Sim Formatting
-    if "---" in response:
-        parts = response.split("---")
-        clean_resp = f"🗣️ **Customer:** {parts[0].strip()}\n\n👨‍🏫 **Feedback:** _{parts[1].strip()}_"
-        add_message("assistant", clean_resp, audio=True)
-    else:
-        add_message("assistant", response, audio=True)
-
-# ================= UI: SIDEBAR =================
+# ================= SIDEBAR: COACHING CONTROLS =================
 with st.sidebar:
-    st.header(f"🇪🇸 User Level: {st.session_state.level}")
+    st.image("https://cdn-icons-png.flaticon.com/512/3898/3898834.png", width=100)
+    st.title("Spanish Professional")
     
-    # Level Selector
-    new_level = st.selectbox("Change Level", ["A1", "A2", "B1", "B2", "C1", "C2"], index=0)
-    if new_level != st.session_state.level: st.session_state.level = new_level
+    st.session_state.level = st.select_slider(
+        "Current Proficiency Level",
+        options=["A1", "A2", "B1", "B2", "C1", "C2"],
+        value=st.session_state.level
+    )
     
     st.divider()
     
-    # NAVIGATION
-    menu = st.radio("Menu", ["Learning", "Career (BPO)", "Tools", "Games", "Settings"])
+    st.subheader("Career Tracks")
+    track_options = [
+        "General Conversation", 
+        "BPO: Customer Support", 
+        "VA: Executive Assistant", 
+        "BPO: Real Estate", 
+        "Technical Support"
+    ]
+    st.session_state.current_track = st.selectbox("Select Training Module", track_options)
     
-    if menu == "Learning":
-        if st.button("🗣️ Free Chat"): st.session_state.mode = "chat"; add_message("assistant", "Hola! Let's chat.")
-        if st.button("📝 Grammar Quiz"): st.session_state.mode = "quiz"; add_message("assistant", get_ai_response("Start quiz", f"Gen question level {st.session_state.level}"))
-        if st.button("🎤 Pronunciation"): st.session_state.mode = "pronunciation"; add_message("assistant", "Send text or audio to check pronunciation.")
-        
-    elif menu == "Career (BPO)":
-        st.subheader("Mock Calls")
-        if st.button("😡 Angry Customer"): st.session_state.mode = "sim_angry"; add_message("assistant", "Call Started: Angry Customer.")
-        if st.button("🏥 Medical Intake"): st.session_state.mode = "sim_medical"; add_message("assistant", "Call Started: Medical.")
-        if st.button("🚗 Insurance Claim"): st.session_state.mode = "sim_insurance"; add_message("assistant", "Call Started: Insurance.")
-        st.divider()
-        if st.button("📜 Script Writer"): st.session_state.mode = "script"; add_message("assistant", "What topic do you need a script for?")
-
-    elif menu == "Tools":
-        if st.button("🔄 Translator"): st.session_state.mode = "translator"; add_message("assistant", "Send text to translate.")
-        
-    elif menu == "Games":
-        if st.button("☠️ Hangman"): 
-            st.session_state.mode = "hangman"
-            word = get_ai_response("Gen 1 word", f"Gen 1 Spanish word level {st.session_state.level}").strip().replace(".","").lower()
-            st.session_state.hangman = {'word': word, 'guessed': [], 'tries': 6}
-            add_message("assistant", f"🎮 **HANGMAN STARTED**\nWord has {len(word)} letters. Guess a letter!")
-
-    if st.button("🗑️ Clear Chat"):
+    st.info(f"**Current Goal:** Training for {st.session_state.current_track} at {st.session_state.level} level.")
+    
+    if st.button("🔄 Reset Session", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
-# ================= UI: MAIN CHAT =================
-st.title("🇪🇸 Ultimate Spanish Coach")
-st.caption(f"Current Mode: **{st.session_state.mode.upper()}**")
+# ================= MAIN INTERFACE =================
+st.title(f"🚀 {st.session_state.current_track} Coach")
 
 # Display History
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        if "---" in msg["content"]:
+            parts = msg["content"].split("---")
+            st.markdown(parts[0])
+            with st.container():
+                st.markdown(f"<div class='coach-feedback'><b>👨‍🏫 Coach's Corner:</b><br>{parts[1]}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(msg["content"])
+        
         if "audio" in msg:
             st.audio(msg["audio"])
 
-# Input Area
-col1, col2 = st.columns([0.85, 0.15])
-with col1:
-    user_input = st.chat_input("Type your message here...")
+# Input Logic
+user_input = st.chat_input("Speak or type your Spanish response...")
+audio_input = st.audio_input("Record your voice")
 
-# Audio Input (New Feature)
-with col2:
-    audio_val = st.audio_input("🎤")
-
-if audio_val:
-    # Transcribe if audio is sent
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-        tmp.write(audio_val.getvalue())
-        try:
+if audio_input:
+    with st.status("Transcribing audio...", expanded=False):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(audio_input.getvalue())
             with open(tmp.name, "rb") as f:
-                transcription = client.audio.transcriptions.create(file=(tmp.name, f), model="whisper-large-v3", language="es")
-            user_input = transcription.text
-        except: st.error("Audio transcription failed.")
+                transcription = client.audio.transcriptions.create(
+                    file=(tmp.name, f), 
+                    model="whisper-large-v3", 
+                    language="es"
+                )
+                user_input = transcription.text
 
-# Process Input
 if user_input:
-    add_message("user", user_input)
-    process_input(user_input)
+    # Append User Message
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    
+    # Get AI Response
+    with st.spinner("AI Coach is thinking..."):
+        full_response = get_ai_response(user_input, st.session_state.current_track, st.session_state.level)
+        audio_path = text_to_speech(full_response)
+        
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": full_response,
+            "audio": audio_path
+        })
+    
     st.rerun()
