@@ -1,3 +1,4 @@
 streamlit
 groq
 gTTS
+audio-recorder-streamlit
