@@ -3,164 +3,190 @@ from groq import Groq
 from gtts import gTTS
 import tempfile
 import os
-import json
+import io
 
-# ================= CONFIGURATION & STYLING =================
+# ================= CONFIGURATION & UI SETUP =================
 st.set_page_config(page_title="Elite Spanish BPO Coach", page_icon="💼", layout="wide")
 
+# Professional CSS
 st.markdown("""
     <style>
-    .main { background-color: #f5f7f9; }
-    .stChatMessage { border-radius: 15px; border: 1px solid #e0e0e0; margin-bottom: 10px; }
-    .coach-feedback { background-color: #e1f5fe; padding: 15px; border-left: 5px solid #0288d1; border-radius: 5px; }
-    .bpo-stat { font-size: 0.9rem; color: #666; font-weight: bold; }
+    .stChatMessage { border-radius: 12px; margin-bottom: 15px; border: 1px solid #f0f2f6; }
+    .coach-box { 
+        background-color: #f0f7ff; 
+        padding: 15px; 
+        border-radius: 8px; 
+        border-left: 5px solid #007bff;
+        margin-top: 10px;
+        font-size: 0.95rem;
+    }
+    .bpo-label { color: #555; font-weight: bold; text-transform: uppercase; font-size: 0.7rem; }
     </style>
 """, unsafe_allow_html=True)
 
-# ================= INITIALIZATION =================
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "current_track" not in st.session_state:
-    st.session_state.current_track = "General Conversation"
-if "level" not in st.session_state:
-    st.session_state.level = "B1"
-
-# API Setup
+# API Initialization
 try:
-    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-except:
-    st.error("Missing GROQ_API_KEY in secrets.")
+    # Works for Streamlit Cloud (Secrets) and Local (.streamlit/secrets.toml)
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+    client = Groq(api_key=GROQ_API_KEY)
+except Exception:
+    st.error("⚠️ GROQ_API_KEY not found. Please set it in Streamlit Secrets.")
     st.stop()
 
-# ================= AI ENGINE (With Memory) =================
-def get_ai_response(user_input, track, level):
-    # Professional System Prompts based on Track
+# ================= SESSION STATE MANAGEMENT =================
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "level" not in st.session_state:
+    st.session_state.level = "B1"
+if "track" not in st.session_state:
+    st.session_state.track = "General Support"
+
+# ================= CORE LOGIC FUNCTIONS =================
+
+def get_bpo_system_prompt(track, level):
+    """Generates a high-precision system prompt for the AI."""
     prompts = {
-        "General Conversation": f"You are a professional Spanish tutor. Level: {level}. Focus on natural flow and CEFR standards.",
-        "BPO: Customer Support": f"You are an angry or confused customer calling a BPO center. The user is the agent. Level: {level}. Use industry-specific terms (billing, troubleshooting).",
-        "VA: Executive Assistant": f"You are a busy US-based CEO. The user is your Spanish-speaking Virtual Assistant. Task: Manage my calendar and emails professionally in Spanish.",
-        "BPO: Real Estate": f"You are a property buyer/seller. The user is a Real Estate VA. Discuss listings, escrow, and viewings in Spanish.",
-        "Technical Support": f"You are a non-technical person with a major internet outage. The user must guide you through steps in Spanish."
+        "General Support": "You are a customer calling a BPO center about a billing error.",
+        "Medical VA": "You are a patient calling your doctor's office to schedule an urgent surgery follow-up.",
+        "Real Estate VA": "You are an investor interested in buying 3 multi-family properties. Ask about ROI and escrow.",
+        "Tech Support": "You are an elderly person whose WiFi is out. You are frustrated and don't know technology.",
+        "Executive VA": "You are a CEO. The user is your Assistant. You need to reschedule 5 meetings and book a flight to Madrid."
     }
+    
+    return (
+        f"ROLE: {prompts[track]} "
+        f"PROFICIENCY LEVEL: {level}. "
+        "INSTRUCTIONS:\n"
+        "1. Start the conversation in Spanish.\n"
+        "2. Be realistic. If the track is 'Tech Support', act confused. If 'General Support', act frustrated.\n"
+        "3. Every response MUST follow this structure:\n"
+        "[Spanish Dialogue]\n"
+        "---\n"
+        "**COACH FEEDBACK (English)**\n"
+        "- **Grammar Fix:** [Point out one specific error the user made]\n"
+        "- **BPO Vocabulary:** [Suggest a more professional Spanish word]\n"
+        "- **Tone Rating:** [Score 1-10]"
+    )
 
-    system_message = {
-        "role": "system",
-        "content": f"{prompts[track]} \n\n"
-                   f"CRITICAL INSTRUCTIONS:\n"
-                   f"1. Stay in character during the dialogue.\n"
-                   f"2. At the end of every response, provide a 'COACH'S CORNER' section in English.\n"
-                   f"3. In Coach's Corner: List 3 corrections, 1 professional vocabulary word used, and a Tone Rating (1-10).\n"
-                   f"4. Format: [Character Dialogue] \n---\n[Coach's Corner]"
-    }
-
-    # Build memory context (Last 6 messages)
-    history = [system_message] + st.session_state.messages[-6:]
-    history.append({"role": "user", "content": user_input})
-
+def generate_tts(text):
+    """Converts the Spanish part of the AI response to audio."""
     try:
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=history,
-            temperature=0.7,
-            max_tokens=1000
-        )
-        return completion.choices[0].message.content
-    except Exception as e:
-        return f"Error connecting to AI: {e}"
-
-# ================= HELPER FUNCTIONS =================
-def text_to_speech(text):
-    # Strip the Coach's Corner from audio
-    clean_text = text.split("---")[0].replace("*", "")
-    try:
-        tts = gTTS(text=clean_text, lang='es', slow=False)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-            tts.save(fp.name)
-            return fp.name
-    except:
+        # Only speak the part BEFORE the '---' (the Spanish dialogue)
+        spanish_part = text.split("---")[0].strip()
+        tts = gTTS(text=spanish_part, lang='es')
+        fp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        tts.save(fp.name)
+        return fp.name
+    except Exception:
         return None
 
-# ================= SIDEBAR: COACHING CONTROLS =================
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3898/3898834.png", width=100)
-    st.title("Spanish Professional")
+def process_ai_chat(user_input):
+    """Handles the Groq API call with sanitized history."""
     
+    # 1. Clean History (The fix for 'property audio is unsupported')
+    # We only send 'role' and 'content' to the API.
+    sanitized_history = [
+        {"role": m["role"], "content": m["content"]} 
+        for m in st.session_state.messages[-10:] # Sliding window of 10 messages
+    ]
+    
+    # 2. Add System Context
+    system_msg = {"role": "system", "content": get_bpo_system_prompt(st.session_state.track, st.session_state.level)}
+    
+    # 3. Call Groq
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[system_msg] + sanitized_history + [{"role": "user", "content": user_input}],
+            temperature=0.7,
+            max_tokens=800
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"⚠️ API Error: {str(e)}"
+
+# ================= SIDEBAR UI =================
+with st.sidebar:
+    st.title("Settings")
     st.session_state.level = st.select_slider(
-        "Current Proficiency Level",
-        options=["A1", "A2", "B1", "B2", "C1", "C2"],
+        "Proficiency Level", 
+        options=["A1", "A2", "B1", "B2", "C1", "C2"], 
         value=st.session_state.level
     )
     
+    st.session_state.track = st.selectbox(
+        "Training Track",
+        ["General Support", "Medical VA", "Real Estate VA", "Tech Support", "Executive VA"]
+    )
+    
     st.divider()
-    
-    st.subheader("Career Tracks")
-    track_options = [
-        "General Conversation", 
-        "BPO: Customer Support", 
-        "VA: Executive Assistant", 
-        "BPO: Real Estate", 
-        "Technical Support"
-    ]
-    st.session_state.current_track = st.selectbox("Select Training Module", track_options)
-    
-    st.info(f"**Current Goal:** Training for {st.session_state.current_track} at {st.session_state.level} level.")
-    
-    if st.button("🔄 Reset Session", use_container_width=True):
+    if st.button("🗑️ Clear Conversation", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
+    
+    st.info(f"**Current Goal:** Practice {st.session_state.track} at {st.session_state.level} level.")
 
-# ================= MAIN INTERFACE =================
-st.title(f"🚀 {st.session_state.current_track} Coach")
+# ================= MAIN CHAT UI =================
+st.title("🇪🇸 Elite Spanish BPO & VA Coach")
 
-# Display History
+# Display Chat History
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if "---" in msg["content"]:
             parts = msg["content"].split("---")
-            st.markdown(parts[0])
-            with st.container():
-                st.markdown(f"<div class='coach-feedback'><b>👨‍🏫 Coach's Corner:</b><br>{parts[1]}</div>", unsafe_allow_html=True)
+            st.markdown(parts[0]) # Spanish Dialogue
+            st.markdown(f"<div class='coach-box'>{parts[1]}</div>", unsafe_allow_html=True) # English Feedback
         else:
             st.markdown(msg["content"])
         
-        if "audio" in msg:
+        if "audio" in msg and msg["audio"]:
             st.audio(msg["audio"])
 
-# Input Logic
-user_input = st.chat_input("Speak or type your Spanish response...")
-audio_input = st.audio_input("Record your voice")
+# Handle Inputs
+user_query = st.chat_input("Type your response in Spanish...")
+audio_query = st.audio_input("Record your voice")
 
-if audio_input:
+# Logic for Audio Transcription
+if audio_query:
     try:
-        with st.status("Transcribing audio...", expanded=False) as status:
-            # We use the audio_input directly. 
-            # Groq needs a filename to identify the format, so we provide a dummy name.
+        with st.status("Transcribing...", expanded=False):
+            # Groq Whisper requires a filename extension to determine format
             transcription = client.audio.transcriptions.create(
-                file=("audio.wav", audio_input.getvalue()), 
-                model="whisper-large-v3", 
+                file=("speech.wav", audio_query.getvalue()),
+                model="whisper-large-v3",
                 language="es",
                 response_format="text"
             )
-            user_input = transcription
-            status.update(label="Transcription complete!", state="complete")
+            user_query = transcription
     except Exception as e:
-        st.error(f"Groq Audio Error: {e}")
-        user_input = None
+        st.error(f"Transcription failed: {e}")
 
-if user_input:
-    # 1. Append User Message to history
-    st.session_state.messages.append({"role": "user", "content": user_input})
+# Process Input and Generate Response
+if user_query:
+    # Add user message to state
+    st.session_state.messages.append({"role": "user", "content": user_query})
     
-    # 2. Get AI Response
-    with st.spinner("AI Coach is thinking..."):
-        full_response = get_ai_response(user_input, st.session_state.current_track, st.session_state.level)
-        audio_path = text_to_speech(full_response)
-        
-        st.session_state.messages.append({
-            "role": "assistant", 
-            "content": full_response,
-            "audio": audio_path
-        })
-    
-    # 3. Rerun to update the chat UI
+    # Generate AI Response
+    with st.chat_message("assistant"):
+        with st.spinner("Customer is responding..."):
+            full_response = process_ai_chat(user_query)
+            audio_path = generate_tts(full_response)
+            
+            # Display immediately
+            if "---" in full_response:
+                parts = full_response.split("---")
+                st.markdown(parts[0])
+                st.markdown(f"<div class='coach-box'>{parts[1]}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(full_response)
+                
+            if audio_path:
+                st.audio(audio_path)
+            
+            # Save to history
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": full_response, 
+                "audio": audio_path
+            })
     st.rerun()
