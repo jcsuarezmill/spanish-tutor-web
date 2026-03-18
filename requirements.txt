@@ -1,4 +1,5 @@
 streamlit
 groq
 gTTS
-audio-recorder-streamlit
+PyPDF2
+beautifulsoup4
