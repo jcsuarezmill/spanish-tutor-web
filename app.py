@@ -131,22 +131,27 @@ user_input = st.chat_input("Speak or type your Spanish response...")
 audio_input = st.audio_input("Record your voice")
 
 if audio_input:
-    with st.status("Transcribing audio...", expanded=False):
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(audio_input.getvalue())
-            with open(tmp.name, "rb") as f:
-                transcription = client.audio.transcriptions.create(
-                    file=(tmp.name, f), 
-                    model="whisper-large-v3", 
-                    language="es"
-                )
-                user_input = transcription.text
+    try:
+        with st.status("Transcribing audio...", expanded=False) as status:
+            # We use the audio_input directly. 
+            # Groq needs a filename to identify the format, so we provide a dummy name.
+            transcription = client.audio.transcriptions.create(
+                file=("audio.wav", audio_input.getvalue()), 
+                model="whisper-large-v3", 
+                language="es",
+                response_format="text"
+            )
+            user_input = transcription
+            status.update(label="Transcription complete!", state="complete")
+    except Exception as e:
+        st.error(f"Groq Audio Error: {e}")
+        user_input = None
 
 if user_input:
-    # Append User Message
+    # 1. Append User Message to history
     st.session_state.messages.append({"role": "user", "content": user_input})
     
-    # Get AI Response
+    # 2. Get AI Response
     with st.spinner("AI Coach is thinking..."):
         full_response = get_ai_response(user_input, st.session_state.current_track, st.session_state.level)
         audio_path = text_to_speech(full_response)
@@ -157,4 +162,5 @@ if user_input:
             "audio": audio_path
         })
     
+    # 3. Rerun to update the chat UI
     st.rerun()
