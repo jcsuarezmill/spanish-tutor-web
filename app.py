@@ -5,173 +5,209 @@ import tempfile
 import os
 import re
 
-# ================= 1. UI CONFIGURATION =================
-st.set_page_config(page_title="Professional BPO Dual-Coach", page_icon="🎧", layout="wide")
+# ================= 1. PRO-LEVEL UI SETUP =================
+st.set_page_config(page_title="Elite BPO Coach Pro", page_icon="🎧", layout="wide")
 
 st.markdown("""
     <style>
-    .stChatMessage { border-radius: 15px; padding: 15px; margin-bottom: 10px; border: 1px solid #e0e0e0; }
-    .persona-label { color: #1a73e8; font-weight: bold; font-size: 1.1rem; margin-bottom: 5px; }
+    .stChatMessage { border-radius: 15px; margin-bottom: 20px; border: 1px solid #e0e0e0; box-shadow: 2px 2px 10px rgba(0,0,0,0.05); }
+    .persona-tag { font-weight: bold; text-transform: uppercase; font-size: 0.8rem; padding: 3px 8px; border-radius: 5px; margin-bottom: 10px; display: inline-block; }
+    .tag-customer { background-color: #ffebee; color: #c62828; }
+    .tag-agent { background-color: #e8f5e9; color: #2e7d32; }
     .coach-card { 
         background-color: #fff9c4; 
         border-left: 6px solid #fbc02d; 
-        padding: 18px; 
-        border-radius: 12px; 
-        margin-top: 15px;
-        color: #424242;
+        padding: 20px; border-radius: 12px; margin-top: 15px;
+        color: #333; font-size: 0.95rem; line-height: 1.5;
     }
-    .feedback-header { color: #f57f17; font-weight: bold; text-transform: uppercase; font-size: 0.85rem; margin-bottom: 8px; }
+    .golden-phrase { color: #e65100; font-weight: bold; background: #fff3e0; padding: 2px 5px; border-radius: 4px; }
     </style>
 """, unsafe_allow_html=True)
 
 # API Initialization
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-except:
+except Exception:
     st.error("🔑 API Key Missing. Please add GROQ_API_KEY to your Streamlit Secrets.")
     st.stop()
 
-# ================= 2. SESSION STATE =================
+# ================= 2. SESSION STATE (STABILITY) =================
 if "messages" not in st.session_state: st.session_state.messages = []
+if "user_role" not in st.session_state: st.session_state.user_role = "Agent (You handle the call)"
 if "level" not in st.session_state: st.session_state.level = "B2"
 if "scenario" not in st.session_state: st.session_state.scenario = "Billing Complaint"
-if "user_role" not in st.session_state: st.session_state.user_role = "Agent (User handles call)"
 if "reset_key" not in st.session_state: st.session_state.reset_key = 0
 
-# ================= 3. LOGIC ENGINES =================
+# ================= 3. THE ENGINE ROOM (FOOLPROOF LOGIC) =================
 
-def get_dual_prompt():
-    is_agent = "Agent" in st.session_state.user_role
-    persona = "A FRUSTRATED CUSTOMER (Speak with emotion)" if is_agent else "AN ELITE BPO PROFESSIONAL AGENT (Speak with perfect empathy)"
+def get_system_prompt():
+    """Generates a high-immersion prompt based on the chosen role."""
+    is_user_agent = "Agent" in st.session_state.user_role
     
+    if is_user_agent:
+        persona = "A frustrated but realistic customer named Roberto. You have a specific billing issue."
+        instruction = "The user is the BPO Agent. Respond as a customer would—sometimes impatient, sometimes confused."
+    else:
+        persona = "An ELITE BPO Professional Agent named Sofia. You have 10 years of experience."
+        instruction = "The user is the customer. Provide world-class service, empathy, and perfect BPO protocols."
+
     return f"""
     SYSTEM ROLE: 
-    1. ACT AS: {persona}. Your name is Juan/Maria. 
-    2. SCENARIO: {st.session_state.scenario}. 
-    3. CURRENT LEVEL: {st.session_state.level}.
+    {persona}. 
+    SCENARIO: {st.session_state.scenario}. 
+    LEVEL: {st.session_state.level}.
 
-    STRICT RESPONSE RULE:
-    - You MUST start your response with a direct reply in character.
-    - If you are the Customer, react to what the Agent said.
-    - If you are the Agent, provide professional service.
-    - After your character dialogue, add a separator '---' and then provide COACHING feedback.
+    RULES:
+    1. Stay 100% in character for the dialogue. 
+    2. Respond to the user's specific words. 
+    3. Use the separator '---' to switch from your character to your coaching role.
+    4. Provide the Coach's Corner ONLY after the '---'.
 
-    OUTPUT FORMAT:
-    [Character Speech in Spanish]
+    FEEDBACK STRUCTURE (English):
     ---
     **COACH'S CORNER**
-    - **Spiel & Phrasing:** (Critique and provide a 'Golden Phrase' alternative)
-    - **Soft Skills & Tone:** (Rate 1-10)
-    - **Voice & Pronunciation:** (Analyze transcription)
-    - **Pro Tip:** (One trick for BPO success)
+    - **Transcription Review:** (Analyze if the user's speech was clear)
+    - **Grammar & Vocab:** (Correct any Spanish errors)
+    - **The Golden Phrase:** (Provide the #1 most professional way to handle this specific moment)
+    - **Soft Skills:** (Grade the empathy and professional tone 1-10)
     """
 
-def get_ai_response(user_input):
-    # --- CRITICAL FIX: HISTORY SCRUBBING ---
-    # We strip the "Coach's Corner" from previous AI messages so the AI doesn't get confused.
-    scrubbed_history = []
-    for m in st.session_state.messages[-6:]:
+def get_clean_history():
+    """CRITICAL: Removes old coaching notes so the AI stays in character."""
+    clean = []
+    for m in st.session_state.messages[-8:]: # Last 8 interactions
         content = m["content"]
         if "---" in content:
-            content = content.split("---")[0].strip() # Take only the dialogue part
-        scrubbed_history.append({"role": m["role"], "content": content})
-    
+            content = content.split("---")[0].strip() # Strip coaching
+        clean.append({"role": m["role"], "content": content})
+    return clean
+
+def get_ai_response(user_text):
+    """Fetches AI response with model fallback logic."""
     models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    history = get_clean_history()
     
     for model in models:
         try:
             completion = client.chat.completions.create(
                 model=model,
-                messages=[{"role": "system", "content": get_dual_prompt()}] + scrubbed_history + [{"role": "user", "content": user_input}],
-                temperature=0.8 # Slightly higher for more realistic personality
+                messages=[{"role": "system", "content": get_system_prompt()}] + history + [{"role": "user", "content": user_text}],
+                temperature=0.8
             )
             return completion.choices[0].message.content
         except Exception as e:
             if "429" in str(e) and model != models[-1]: continue
             return f"⚠️ Error: {str(e)}"
 
-def speak(text):
+def generate_voice(full_text):
+    """Sanitizes text and generates professional TTS."""
     try:
-        dialogue = text.split("---")[0].strip()
-        clean_text = re.sub(r'[*#_~]', '', dialogue)
-        tts = gTTS(text=clean_text, lang='es')
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-            tts.save(fp.name)
-            return fp.name
+        dialogue = full_text.split("---")[0].strip()
+        # Remove all markdown/symbols for the voice engine
+        clean_voice_text = re.sub(r'[*#_~-]', '', dialogue)
+        tts = gTTS(text=clean_voice_text, lang='es')
+        fp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        tts.save(fp.name)
+        return fp.name
     except: return None
 
-# ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR (CONTROL PANEL) =================
 with st.sidebar:
-    st.title("🎧 Training Center")
-    new_role = st.radio("Switch Your Role:", ["Agent (User handles call)", "Customer (AI handles call)"])
-    if new_role != st.session_state.user_role:
-        st.session_state.user_role = new_role
-        st.session_state.messages = [] # Reset on role change for fresh start
+    st.title("🚀 Career Training Center")
+    
+    # Role Selector (Resets on change)
+    role_choice = st.radio("Choose Your Practice Role:", 
+                          ["Agent (You handle the call)", "Customer (AI handles the call)"])
+    if role_choice != st.session_state.user_role:
+        st.session_state.user_role = role_choice
+        st.session_state.messages = []
         st.rerun()
 
     st.divider()
-    st.session_state.level = st.select_slider("My Target Level", ["A1", "A2", "B1", "B2", "C1", "C2"], value=st.session_state.level)
-    st.session_state.scenario = st.selectbox("Scenario", ["Billing Complaint", "Tech Support", "Medical VA", "Real Estate Inquiry", "CUSTOM"])
+    st.session_state.level = st.select_slider("Target Spanish Level:", ["A1", "A2", "B1", "B2", "C1", "C2"], value=st.session_state.level)
     
+    scenario_list = ["Billing Complaint", "Medical VA (Scheduling)", "Real Estate (Lead Gen)", "Tech Support Agent", "CUSTOM SCENARIO"]
+    st.session_state.scenario = st.selectbox("Scenario:", scenario_list)
+    if st.session_state.scenario == "CUSTOM SCENARIO":
+        st.session_state.scenario = st.text_input("Describe your custom scenario:")
+
     if st.button("🗑️ Reset Interaction", use_container_width=True):
         st.session_state.messages = []
         st.session_state.reset_key += 1
         st.rerun()
 
-# ================= 5. CHAT UI =================
-st.title("🇪🇸 BPO Professional Dual-Coach")
-st.info(f"**MODE:** You are the **{'AGENT' if 'Agent' in st.session_state.user_role else 'CUSTOMER'}**")
+# ================= 5. MAIN INTERFACE =================
+st.title("🇪🇸 Elite Spanish BPO Coach")
+mode_label = "AGENT" if "Agent" in st.session_state.user_role else "CUSTOMER"
+st.info(f"**MODE:** You are practicing as the **{mode_label}**")
 
 # Display Messages
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if "---" in msg["content"]:
             parts = msg["content"].split("---")
-            label = "👤 Customer" if "Agent" in st.session_state.user_role else "🎧 Elite Agent"
-            st.markdown(f"<div class='persona-label'>{label}</div>", unsafe_allow_html=True)
-            st.markdown(parts[0])
-            st.markdown(f"<div class='coach-card'><div class='feedback-header'>👨‍🏫 Performance Coaching</div>{parts[1]}</div>", unsafe_allow_html=True)
+            tag_class = "tag-customer" if "Agent" in st.session_state.user_role else "tag-agent"
+            tag_label = "👤 Customer" if "Agent" in st.session_state.user_role else "🎧 Elite Agent"
+            
+            st.markdown(f"<div class='persona-tag {tag_class}'>{tag_label}</div>", unsafe_allow_html=True)
+            st.markdown(parts[0]) # Dialogue
+            st.markdown(f"<div class='coach-card'><b>👨‍🏫 Coach's Corner</b><br>{parts[1]}</div>", unsafe_allow_html=True)
         else:
             st.markdown(msg["content"])
         if "audio" in msg: st.audio(msg["audio"])
 
-# Input Logic
-final_input = None
-audio_data = st.audio_input("Record your response", key=f"audio_{st.session_state.reset_key}")
+# ================= 6. INPUT PIPELINE =================
+user_input = None
+
+# Audio Handler
+audio_data = st.audio_input("Record your Spanish response", key=f"audio_{st.session_state.reset_key}")
 if audio_data:
     with st.status("Transcribing...", expanded=False):
-        transcript = client.audio.transcriptions.create(file=("in.wav", audio_data.getvalue()), model="whisper-large-v3", language="es", response_format="text")
-        final_input = transcript
+        transcript = client.audio.transcriptions.create(
+            file=("speech.wav", audio_data.getvalue()), 
+            model="whisper-large-v3", 
+            language="es", 
+            response_format="text"
+        )
+        user_input = transcript
 
-text_data = st.chat_input("Type here...")
-if text_data: final_input = text_data
+# Text Fallback
+text_input = st.chat_input("Or type your response here...")
+if text_input: user_input = text_input
 
-# ================= 6. EXECUTION =================
-if final_input:
-    st.session_state.messages.append({"role": "user", "content": final_input})
+# ================= 7. PROCESSING LOOP =================
+if user_input:
+    # 1. Store User Input
+    st.session_state.messages.append({"role": "user", "content": user_input})
     
+    # 2. Generate AI Response
     with st.chat_message("assistant"):
         with st.spinner("Wait, the character is responding..."):
-            full_resp = get_ai_response(final_input)
-            audio_path = speak(full_resp)
+            ai_raw = get_ai_response(user_input)
+            audio_path = generate_voice(ai_raw)
             
-            if "---" in full_resp:
-                parts = full_resp.split("---")
-                label = "👤 Customer" if "Agent" in st.session_state.user_role else "🎧 Elite Agent"
-                st.markdown(f"<div class='persona-label'>{label}</div>", unsafe_allow_html=True)
+            # Display Immediately
+            if "---" in ai_raw:
+                parts = ai_raw.split("---")
+                tag_class = "tag-customer" if "Agent" in st.session_state.user_role else "tag-agent"
+                tag_label = "👤 Customer" if "Agent" in st.session_state.user_role else "🎧 Elite Agent"
+                st.markdown(f"<div class='persona-tag {tag_class}'>{tag_label}</div>", unsafe_allow_html=True)
                 st.markdown(parts[0])
-                st.markdown(f"<div class='coach-card'><div class='feedback-header'>👨‍🏫 Performance Coaching</div>{parts[1]}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='coach-card'><b>👨‍🏫 Coach's Corner</b><br>{parts[1]}</div>", unsafe_allow_html=True)
             else:
-                st.markdown(full_resp)
-            
+                st.markdown(ai_raw)
+                
             if audio_path: st.audio(audio_path)
-            st.session_state.messages.append({"role": "assistant", "content": full_resp, "audio": audio_path})
+            
+            # 3. Save to History
+            st.session_state.messages.append({"role": "assistant", "content": ai_raw, "audio": audio_path})
     
+    # 4. Clean up and Refresh
     st.session_state.reset_key += 1
     st.rerun()
 
-# Auto-Greeting for Customer Mode
+# Initial Prompt for "Customer" Mode
 if not st.session_state.messages and "Customer" in st.session_state.user_role:
-    greeting = "🎧 **Elite Agent:** 'Gracias por llamar a soporte técnico, mi nombre es Juan. ¿Con quién tengo el gusto de hablar?'"
-    st.session_state.messages.append({"role": "assistant", "content": greeting})
+    initial_greet = "🎧 **Elite Agent:** 'Gracias por llamar a soporte técnico, mi nombre es Juan. ¿Con quién tengo el gusto de hablar?'"
+    st.session_state.messages.append({"role": "assistant", "content": initial_greet})
     st.rerun()
