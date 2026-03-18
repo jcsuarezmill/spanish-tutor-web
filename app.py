@@ -7,207 +7,195 @@ import re
 from PyPDF2 import PdfReader
 from bs4 import BeautifulSoup
 
-# ================= 1. ADVANCED FILE PROCESSING =================
+# ================= 1. ROBUST FILE PROCESSING =================
 def extract_text_from_file(uploaded_file):
-    """Handles PDF, HTML, and TXT extraction."""
-    if uploaded_file is None:
-        return ""
-    file_extension = uploaded_file.name.split('.')[-1].lower()
-    
+    if uploaded_file is None: return ""
+    ext = uploaded_file.name.split('.')[-1].lower()
+    text = ""
     try:
-        if file_extension == 'pdf':
+        if ext == 'pdf':
             pdf_reader = PdfReader(uploaded_file)
-            text = ""
             for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
-            return text
-        elif file_extension == 'html':
+                text += page.extract_text() + " "
+        elif ext == 'html':
             soup = BeautifulSoup(uploaded_file.read(), 'html.parser')
-            return soup.get_text()
+            text = soup.get_text()
         else:
-            return uploaded_file.read().decode("utf-8")
+            text = uploaded_file.read().decode("utf-8")
+        
+        # Cleanup: Remove excessive newlines and spaces to save tokens
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
     except Exception as e:
-        st.error(f"Error processing {uploaded_file.name}: {e}")
+        st.error(f"Error reading {uploaded_file.name}: {e}")
         return ""
 
-# ================= 2. UI & SESSION STATE =================
-st.set_page_config(page_title="Elite Spanish Coach Pro", page_icon="🎙️", layout="wide")
+# ================= 2. INITIALIZATION =================
+st.set_page_config(page_title="Elite Spanish Pro", page_icon="🎙️", layout="wide")
 
-# Initialize Session States
 if "messages" not in st.session_state: st.session_state.messages = []
-if "metrics" not in st.session_state: 
-    st.session_state.metrics = {"Grammar": 0, "Empathy": 0, "Resolution": 0, "Turns": 0}
+if "metrics" not in st.session_state: st.session_state.metrics = {"Grammar": 0, "Empathy": 0, "Resolution": 0, "Turns": 0}
 if "kb_content" not in st.session_state: st.session_state.kb_content = ""
 if "resume_content" not in st.session_state: st.session_state.resume_content = ""
 
-# API Check
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 except:
-    st.error("Missing GROQ_API_KEY. Add it to Streamlit Secrets.")
+    st.error("Missing GROQ_API_KEY in Streamlit Secrets.")
     st.stop()
 
-# ================= 3. PROMPT & CHARACTER ENGINE =================
+# ================= 3. SYSTEM PROMPT ENGINE =================
 def build_system_prompt():
-    role = st.session_state.role_mode
-    scenario = st.session_state.scenario_text
-    level = st.session_state.target_level
+    role = st.session_state.get('role_mode', 'User as Applicant')
+    scenario = st.session_state.get('scenario_text', 'General Interview')
+    level = st.session_state.get('target_level', 'B2')
     kb = st.session_state.kb_content
     resume = st.session_state.resume_content
 
-    # Determine Persona
-    if "AI is Interviewer" in role:
-        persona = "You are a Senior Hiring Manager. Use the provided Resume to challenge the user and the Company Info to ask specific cultural questions."
-    elif "AI is Applicant" in role:
-        persona = "You are a job applicant. Use the Resume as your own background. The user is interviewing you for a role described in the Company Info."
-    elif "AI is Customer" in role:
-        persona = "You are a customer calling a BPO center. Use the Company Info to present a specific problem. Be realistic: stay in character even if frustrated."
-    else: # AI is Agent
-        persona = "You are an Elite BPO Agent. Provide perfect support using the provided Company SOPs and Knowledge Base."
-
+    # Structured prompt for high AI attention
     return f"""
-    ROLE: {persona}
-    SPANISH LEVEL: {level}
-    SCENARIO: {scenario}
-    
-    KNOWLEDGE BASE (CONTEXT): {kb[:3000]} 
-    USER RESUME/PROFILE: {resume[:3000]}
+    ### CORE CONTEXT
+    - **ROLE**: {role}
+    - **SPANISH LEVEL**: {level}
+    - **SCENARIO**: {scenario}
 
-    INSTRUCTIONS:
-    1. Stay 100% in character in the first part of your response.
-    2. Analyze the user's Spanish, tone, and accuracy.
-    3. Use the separator '---COACH_DATA---'.
+    ### DATA INJECTION (READ THIS FIRST)
+    - **USER RESUME**: {resume if resume else "No resume provided."}
+    - **COMPANY/PRODUCT INFO**: {kb if kb else "No company info provided."}
 
-    OUTPUT FORMAT:
-    [Character Response in Spanish]
-    ---COACH_DATA---
-    **Elite Analysis**
-    - **Mistakes:** (List any grammar/vocab errors)
-    - **Golden Phrase:** (A pro-level Spanish alternative for what the user said)
-    - **Metrics:** (Provide a comma-separated score out of 10 for: Grammar, Empathy, Resolution)
+    ### INSTRUCTIONS
+    1. If role is 'AI is Interviewer', use the RESUME to ask specific, challenging questions. Mention their past experience.
+    2. Respond strictly in character first.
+    3. Then provide feedback after the separator '---COACH---'.
+
+    ### OUTPUT SCHEMA
+    [Dialogue in Spanish]
+    ---COACH---
+    **Feedback:** (Mistakes, Better Vocab)
+    **Score:** (Grammar: X/10, Empathy: X/10, Resolution: X/10)
     """
 
-def update_metrics(score_string):
-    """Parses the score from AI and updates the dashboard."""
-    try:
-        scores = re.findall(r'\d+', score_string)
-        if len(scores) >= 3:
-            st.session_state.metrics["Grammar"] += int(scores[0])
-            st.session_state.metrics["Empathy"] += int(scores[1])
-            st.session_state.metrics["Resolution"] += int(scores[2])
-            st.session_state.metrics["Turns"] += 1
-    except: pass
-
-# ================= 4. SIDEBAR & FILE MANAGEMENT =================
+# ================= 4. SIDEBAR =================
 with st.sidebar:
-    st.title("🛡️ Training Command")
-    
-    st.session_state.role_mode = st.selectbox("Select Roleplay Mode", [
+    st.title("🛡️ Setup Center")
+    st.session_state.role_mode = st.selectbox("Roleplay Mode", [
         "User as Applicant (AI is Interviewer)",
         "User as Interviewer (AI is Applicant)",
         "User as Agent (AI is Customer)",
         "User as Customer (AI is Agent)"
     ])
-    
-    st.session_state.target_level = st.select_slider("Target Proficiency", ["A2", "B1", "B2", "C1", "C2"])
-    
-    st.session_state.scenario_text = st.text_area("🚩 Define Custom Scenario", 
-        placeholder="E.g. Technical support for a broken router, or Final interview for a Team Lead role.")
+    st.session_state.target_level = st.select_slider("Target Level", ["A2", "B1", "B2", "C1", "C2"])
+    st.session_state.scenario_text = st.text_area("Define Scenario", "Practice a job interview for a call center position.")
 
     st.divider()
-    
-    # Knowledge Base Upload
-    st.subheader("📖 Company Data / SOPs")
-    kb_file = st.file_uploader("Upload Product Manuals, HTML site, or SOPs", type=['pdf', 'html', 'txt'])
+    kb_file = st.file_uploader("Upload Company/Product Info (PDF/HTML)", type=['pdf', 'html', 'txt'])
     if kb_file:
         st.session_state.kb_content = extract_text_from_file(kb_file)
-        st.success("KB Loaded!")
+        st.success(f"Loaded {len(st.session_state.kb_content)} chars of Company Data")
 
-    # Resume Upload
-    st.subheader("👤 Your Resume / Profile")
-    res_file = st.file_uploader("Upload your Resume or the AI's persona bio", type=['pdf', 'html', 'txt'])
+    res_file = st.file_uploader("Upload Your Resume (PDF/HTML)", type=['pdf', 'html', 'txt'])
     if res_file:
         st.session_state.resume_content = extract_text_from_file(res_file)
-        st.success("Resume Loaded!")
+        st.success(f"Loaded {len(st.session_state.resume_content)} chars of Resume Data")
 
-    if st.button("🗑️ Reset All Progress"):
+    if st.button("Clear Chat"):
         st.session_state.messages = []
         st.session_state.metrics = {"Grammar": 0, "Empathy": 0, "Resolution": 0, "Turns": 0}
         st.rerun()
 
-# ================= 5. DASHBOARD & MAIN UI =================
-st.title("🚀 Elite BPO & Interview Simulator")
+# ================= 5. MAIN CHAT & FALLBACK LOGIC =================
+st.title("🚀 Elite BPO & Interview Coach")
 
-# Show Metrics Dashboard
+# Display Stats
 if st.session_state.metrics["Turns"] > 0:
     t = st.session_state.metrics["Turns"]
     c1, c2, c3 = st.columns(3)
-    c1.metric("Grammar Avg", f"{round(st.session_state.metrics['Grammar']/t, 1)}/10")
-    c2.metric("Empathy Avg", f"{round(st.session_state.metrics['Empathy']/t, 1)}/10")
-    c3.metric("Goal Progress", f"{round(st.session_state.metrics['Resolution']/t, 1)}/10")
+    c1.metric("Grammar", f"{round(st.session_state.metrics['Grammar']/t, 1)}/10")
+    c2.metric("Empathy", f"{round(st.session_state.metrics['Empathy']/t, 1)}/10")
+    c3.metric("Goal", f"{round(st.session_state.metrics['Resolution']/t, 1)}/10")
 
-# Display Conversation History
+# History
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        if "---COACH_DATA---" in msg["content"]:
-            char_text, coach_text = msg["content"].split("---COACH_DATA---")
-            st.markdown(char_text)
-            with st.expander("📝 Coaching & Professional Feedback"):
-                st.markdown(coach_text)
+        if "---COACH---" in msg["content"]:
+            txt, coach = msg["content"].split("---COACH---")
+            st.markdown(txt)
+            with st.expander("📝 Feedback"): st.markdown(coach)
         else:
             st.markdown(msg["content"])
 
-# ================= 6. INPUT & LOGIC =================
+# --- INPUT SECTION ---
 user_input = None
-audio_in = st.audio_input("Speak in Spanish")
+audio_in = st.audio_input("Speak Spanish")
 text_in = st.chat_input("Type your response...")
 
 if audio_in:
-    with st.spinner("Transcribing..."):
-        transcript = client.audio.transcriptions.create(
-            file=("audio.wav", audio_in.getvalue()),
-            model="whisper-large-v3",
-            language="es"
-        )
-        user_input = transcript.text
+    with st.spinner("Listening..."):
+        try:
+            transcript = client.audio.transcriptions.create(
+                file=("audio.wav", audio_in.getvalue()),
+                model="whisper-large-v3",
+                language="es"
+            )
+            user_input = transcript.text
+        except Exception as e:
+            st.error(f"Transcription failed: {e}")
 
 if text_in: user_input = text_in
 
+# --- PROCESSING ---
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"): st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing and Responding..."):
-            # Construct History (Excluding coach data to avoid AI confusion)
-            clean_history = []
-            for m in st.session_state.messages[-8:]:
-                content = m["content"].split("---COACH_DATA---")[0]
-                clean_history.append({"role": m["role"], "content": content})
+        with st.spinner("AI is thinking..."):
+            history = [{"role": m["role"], "content": m["content"].split("---COACH---")[0]} for m in st.session_state.messages[-6:]]
             
-            # AI Request
-            chat_completion = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "system", "content": build_system_prompt()}] + clean_history
-            )
+            # MODEL FALLBACK LOGIC
+            full_reply = ""
+            models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
             
-            full_reply = chat_completion.choices[0].message.content
-            
-            if "---COACH_DATA---" in full_reply:
-                dialogue, coach = full_reply.split("---COACH_DATA---")
+            for model_name in models:
+                try:
+                    res = client.chat.completions.create(
+                        model=model_name,
+                        messages=[{"role": "system", "content": build_system_prompt()}] + history
+                    )
+                    full_reply = res.choices[0].message.content
+                    break # Success!
+                except Exception as e:
+                    if "rate_limit" in str(e).lower() and model_name != models[-1]:
+                        st.warning(f"70B Model Busy. Switching to faster 8B engine...")
+                        continue
+                    else:
+                        st.error(f"Error: {e}")
+                        st.stop()
+
+            # UI Rendering
+            if "---COACH---" in full_reply:
+                dialogue, coach = full_reply.split("---COACH---")
                 st.markdown(dialogue.strip())
                 
-                # Voice Synthesis (Dialogue Only)
-                tts = gTTS(text=re.sub(r'[*#_~-]', '', dialogue), lang='es')
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-                    tts.save(fp.name)
-                    st.audio(fp.name)
+                # Audio out
+                try:
+                    tts = gTTS(text=re.sub(r'[*#_~-]', '', dialogue), lang='es')
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+                        tts.save(fp.name)
+                        st.audio(fp.name)
+                except: pass
                 
-                with st.expander("📝 Coaching & Professional Feedback"):
-                    st.markdown(coach.strip())
+                with st.expander("📝 Feedback"): st.markdown(coach)
                 
-                update_metrics(coach)
+                # Update Score logic
+                scores = re.findall(r'\d+', coach)
+                if len(scores) >= 3:
+                    st.session_state.metrics["Grammar"] += int(scores[0])
+                    st.session_state.metrics["Empathy"] += int(scores[1])
+                    st.session_state.metrics["Resolution"] += int(scores[2])
+                    st.session_state.metrics["Turns"] += 1
             else:
                 st.markdown(full_reply)
             
             st.session_state.messages.append({"role": "assistant", "content": full_reply})
+            st.rerun()
