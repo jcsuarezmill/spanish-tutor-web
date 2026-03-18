@@ -29,9 +29,11 @@ def extract_text(files):
 # ================= 2. SETUP & STATE =================
 st.set_page_config(page_title="Elite Spanish Coach", layout="wide", page_icon="🇪🇸")
 
+# Initialize session states
 if "messages" not in st.session_state: st.session_state.messages = []
 if "metrics" not in st.session_state: st.session_state.metrics = {"G": [], "E": [], "R": []}
 if "last_processed_id" not in st.session_state: st.session_state.last_processed_id = ""
+if "feedback_data" not in st.session_state: st.session_state.feedback_data = {}
 
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
@@ -39,41 +41,37 @@ except:
     st.error("GROQ_API_KEY is missing in secrets.")
     st.stop()
 
-# ================= 3. DYNAMIC PROMPT =================
-def get_system_prompt():
+# ================= 3. PROMPTS =================
+
+def get_sim_prompt():
+    """Focuses purely on character immersion."""
     role = st.session_state.get('role', 'User as Applicant')
     scenario = st.session_state.get('scenario', 'Job Interview')
-    context = f"CONTEXT DOCUMENTS: {st.session_state.kb_content[:5000]}\nUSER DATA: {st.session_state.res_content[:5000]}"
+    context = f"DOCS: {st.session_state.kb_content[:3000]}\nUSER BIO: {st.session_state.res_content[:2000]}"
     
-    # Determine who the AI is based on selected role
     if "AI is Applicant" in role:
-        persona = f"ACT AS: A job applicant named Rod Salmeo. Tone: Professional/Polite."
+        persona = "ACT AS: Rod Salmeo (Job Applicant). Tone: Professional, slightly nervous but capable."
     elif "AI is Interviewer" in role:
-        persona = f"ACT AS: A high-level Professional Interviewer. Tone: Formal/Observant."
+        persona = "ACT AS: Senior Hiring Manager. Tone: Formal, probing, observant."
     elif "AI is Customer" in role:
-        persona = f"ACT AS: A Customer. Tone: Realistic/Direct."
+        persona = "ACT AS: Frustrated but reasonable customer. Tone: Realistic."
     else:
-        persona = f"ACT AS: A Professional Agent. Tone: Helpful/Efficient."
+        persona = "ACT AS: Professional Service Agent."
 
+    return f"{persona}\nSCENARIO: {scenario}\nCONTEXT: {context}\nRULE: Respond ONLY in Spanish. Keep it brief and conversational."
+
+def get_coaching_prompt(user_msg, ai_res):
+    """Dedicated prompt for high-quality linguistic analysis."""
     return f"""
-    {persona}
-    SCENARIO: {scenario}
-    DOCUMENT CONTEXT: {context}
+    Analyze this Spanish professional interaction:
+    User said: "{user_msg}"
+    AI responded: "{ai_res}"
 
-    STRICT RULES:
-    1. Stay in character for the dialogue.
-    2. Respond in Spanish ONLY for the character part.
-    3. Use the following XML tags for every response:
-    
-    <SIM>
-    [Character response in Spanish]
-    </SIM>
-    
-    <COACH>
-    **Feedback on User's Spanish:** (Correct their grammar, vocabulary, and professional tone)
-    **Learning Point:** (Explain 1-2 professional Spanish words you used in your response)
+    Provide feedback in English using this format:
+    **Grammar & Vocabulary:** (Specific corrections)
+    **Professional Tone:** (How to sound more like a native professional)
+    **Key Vocabulary:** (Explain 2-3 advanced words used)
     **Scores:** G: (1-10), E: (1-10), R: (1-10)
-    </COACH>
     """
 
 # ================= 4. SIDEBAR =================
@@ -97,131 +95,102 @@ with st.sidebar:
     if res_files: st.session_state.res_content = extract_text(res_files)
     else: st.session_state.res_content = ""
 
-    if st.button("🗑️ Reset Coaching"):
+    if st.button("🗑️ Reset Practice"):
         st.session_state.messages = []
         st.session_state.metrics = {"G": [], "E": [], "R": []}
-        st.session_state.last_processed_id = ""
+        st.session_state.feedback_data = {}
         st.rerun()
 
-# ================= 5. MAIN UI =================
+# ================= 5. COACHING LOGIC =================
+def generate_feedback(idx):
+    """Triggered when user clicks 'Generate Feedback' on a specific message."""
+    user_text = st.session_state.messages[idx-1]["content"]
+    ai_text = st.session_state.messages[idx]["content"]
+    
+    with st.spinner("Analyzing your Spanish..."):
+        try:
+            res = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "system", "content": "You are an expert Spanish Business Coach."},
+                          {"role": "user", "content": get_coaching_prompt(user_text, ai_text)}]
+            )
+            feedback = res.choices[0].message.content
+            st.session_state.feedback_data[idx] = feedback
+            
+            # Update Metrics
+            scores = re.findall(r'[GER]:\s*(\d+)', feedback)
+            if len(scores) >= 3:
+                st.session_state.metrics["G"].append(int(scores[0]))
+                st.session_state.metrics["E"].append(int(scores[1]))
+                st.session_state.metrics["R"].append(int(scores[2]))
+        except Exception as e:
+            st.error(f"Coaching failed: {e}")
+
+# ================= 6. MAIN UI =================
 st.title("🇪🇸 Elite Spanish Professional Coach")
 
-# Performance Dashboard
+# Metrics Dashboard
 if st.session_state.metrics["G"]:
-    m1, m2, m3 = st.columns(3)
+    cols = st.columns(3)
     avg = lambda k: sum(st.session_state.metrics[k])/len(st.session_state.metrics[k])
-    m1.metric("Grammar Accuracy", f"{avg('G'):.1f}/10")
-    m2.metric("Professional Empathy", f"{avg('E'):.1f}/10")
-    m3.metric("Result / Outcome", f"{avg('R'):.1f}/10")
-    st.divider()
+    cols[0].metric("Grammar", f"{avg('G'):.1f}/10")
+    cols[1].metric("Empathy", f"{avg('E'):.1f}/10")
+    cols[2].metric("Result", f"{avg('R'):.1f}/10")
 
 # Message Display
 for i, m in enumerate(st.session_state.messages):
     with st.chat_message(m["role"]):
-        # Use Regex to separate SIM and COACH
-        sim_match = re.search(r'<SIM>(.*?)</SIM>', m["content"], re.DOTALL)
-        coach_match = re.search(r'<COACH>(.*?)</COACH>', m["content"], re.DOTALL)
+        st.write(m["content"])
         
-        if sim_match:
-            st.markdown(f"#### {sim_match.group(1).strip()}")
-            # Play audio stored specifically for THIS message
-            if "audio" in m:
-                st.audio(m["audio"], format="audio/mp3")
-                
-            if coach_match:
-                with st.expander("📝 View Coaching Analysis", expanded=(i == len(st.session_state.messages)-1)):
-                    st.info(coach_match.group(1).strip())
-        else:
-            # Fallback for system or start messages
-            st.write(m["content"])
+        if "audio" in m:
+            st.audio(m["audio"], format="audio/mp3")
+        
+        # Add feedback button to AI messages (except the very first greeting)
+        if m["role"] == "assistant" and i > 0:
+            if i in st.session_state.feedback_data:
+                st.info(st.session_state.feedback_data[i])
+            else:
+                if st.button("📝 Get Feedback on this exchange", key=f"feed_{i}"):
+                    generate_feedback(i)
+                    st.rerun()
 
-# ================= 6. INPUT LOGIC (ANTI-LOOP) =================
+# ================= 7. INPUT HANDLING =================
 user_input = None
-
 audio_data = st.audio_input("Respond in Spanish")
 if audio_data:
-    # Checksum to prevent reprocessing the same audio on rerun
     current_id = hashlib.md5(audio_data.getvalue()).hexdigest()
     if current_id != st.session_state.last_processed_id:
         with st.spinner("Transcribing..."):
-            try:
-                res = client.audio.transcriptions.create(
-                    file=("file.wav", audio_data.getvalue()),
-                    model="whisper-large-v3",
-                    language="es"
-                )
-                user_input = res.text
-                st.session_state.last_processed_id = current_id
-            except: st.error("Transcription failed.")
+            res = client.audio.transcriptions.create(file=("f.wav", audio_data.getvalue()), model="whisper-large-v3", language="es")
+            user_input = res.text
+            st.session_state.last_processed_id = current_id
 
 text_in = st.chat_input("Type your response...")
 if text_in: user_input = text_in
 
-# ================= 7. AI BRAIN =================
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
     
     with st.chat_message("assistant"):
-        # Build clean history (strip coaching tags)
-        history = []
-        for m in st.session_state.messages[-8:]:
-            sim_only = re.search(r'<SIM>(.*?)</SIM>', m["content"], re.DOTALL)
-            history.append({"role": m["role"], "content": sim_only.group(1) if sim_only else m["content"]})
+        # We only send text history to the AI (not audio bytes)
+        history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages[-6:]]
         
-        try:
-            # AI Inference
-            model = "llama-3.3-70b-versatile"
-            try:
-                response = client.chat.completions.create(model=model, messages=[{"role": "system", "content": get_system_prompt()}] + history)
-            except:
-                response = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": get_system_prompt()}] + history)
-            
-            full_text = response.choices[0].message.content
-            
-            # Parse Simulation Text
-            sim_text = re.search(r'<SIM>(.*?)</SIM>', full_text, re.DOTALL)
-            coach_text = re.search(r'<COACH>(.*?)</COACH>', full_text, re.DOTALL)
-            
-            if sim_text:
-                clean_sim = sim_text.group(1).strip()
-                st.markdown(f"#### {clean_sim}")
-                
-                # Generate Audio
-                tts = gTTS(text=re.sub(r'[*#_~-]', '', clean_sim), lang='es')
-                audio_buf = io.BytesIO()
-                tts.write_to_fp(audio_buf)
-                audio_bytes = audio_buf.getvalue()
-                
-                st.audio(audio_bytes, format="audio/mp3")
-                
-                if coach_text:
-                    with st.expander("📝 View Coaching Analysis", expanded=True):
-                        st.info(coach_text.group(1).strip())
-                    # Scores
-                    scores = re.findall(r'[GER]:\s*(\d+)', coach_text.group(1))
-                    if len(scores) >= 3:
-                        st.session_state.metrics["G"].append(int(scores[0]))
-                        st.session_state.metrics["E"].append(int(scores[1]))
-                        st.session_state.metrics["R"].append(int(scores[2]))
-                
-                # SAVE MESSAGE WITH AUDIO BYTES
-                st.session_state.messages.append({"role": "assistant", "content": full_text, "audio": audio_bytes})
-            else:
-                st.write(full_text)
-            
-            st.rerun()
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": get_sim_prompt()}] + history
+        )
+        ans = response.choices[0].message.content
+        
+        # Audio Generation
+        tts = gTTS(text=ans, lang='es')
+        audio_buf = io.BytesIO()
+        tts.write_to_fp(audio_buf)
+        
+        st.session_state.messages.append({"role": "assistant", "content": ans, "audio": audio_buf.getvalue()})
+        st.rerun()
 
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-# ================= 8. STARTUP =================
+# Greeting
 if not st.session_state.messages:
-    if "AI is Applicant" in st.session_state.role:
-        start = "<SIM>Hola, mucho gusto. Gracias por recibirme hoy. Estoy listo para comenzar la entrevista cuando usted diga.</SIM>"
-    elif "AI is Interviewer" in st.session_state.role:
-        start = "<SIM>Bienvenido. He revisado su perfil y estoy interesado en conocer más sobre usted. ¿Podría comenzar presentándose?</SIM>"
-    else:
-        start = "<SIM>Llamada conectada. Hola, ¿en qué puedo ayudarle hoy?</SIM>"
-    
-    st.session_state.messages.append({"role": "assistant", "content": start})
+    greeting = "Hola. ¿En qué puedo ayudarle hoy?" if "Customer" in st.session_state.role else "Hola, mucho gusto. ¿Comenzamos?"
+    st.session_state.messages.append({"role": "assistant", "content": greeting})
     st.rerun()
