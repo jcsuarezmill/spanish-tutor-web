@@ -13,7 +13,7 @@ def extract_text(files):
     if not files: return ""
     for f in files:
         ext = f.name.split('.')[-1].lower()
-        text_out += f"\n--- DOC: {f.name} ---\n"
+        text_out += f"\n--- DOCUMENT: {f.name} ---\n"
         try:
             if ext == 'pdf':
                 reader = PdfReader(f)
@@ -23,205 +23,216 @@ def extract_text(files):
             else:
                 text_out += f.read().decode("utf-8", errors='ignore')
         except Exception as e:
-            text_out += f"[Error: {e}]"
+            text_out += f"[Parsing Error: {e}]"
     return text_out
 
 # ================= 2. SETUP & STATE =================
-st.set_page_config(page_title="Elite Spanish Coach", layout="wide", page_icon="🇪🇸")
+st.set_page_config(page_title="Elite Spanish Coach Pro", layout="wide", page_icon="🇪🇸")
 
-if "messages" not in st.session_state: st.session_state.messages = []
-if "metrics" not in st.session_state: st.session_state.metrics = {"G": [], "E": [], "R": []}
-if "last_processed_id" not in st.session_state: st.session_state.last_processed_id = ""
+# Initialize Session State
+state_keys = {
+    "messages": [], 
+    "metrics": {"G": [], "E": [], "R": []}, 
+    "last_processed_id": "",
+    "kb_content": "",
+    "res_content": ""
+}
+for key, value in state_keys.items():
+    if key not in st.session_state: st.session_state[key] = value
 
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 except:
-    st.error("GROQ_API_KEY is missing in secrets.")
+    st.error("GROQ_API_KEY missing in secrets.")
     st.stop()
 
-# ================= 3. DYNAMIC PROMPT =================
+# ================= 3. ENHANCED SYSTEM PROMPT =================
 def get_system_prompt():
     role = st.session_state.get('role', 'User as Applicant')
     scenario = st.session_state.get('scenario', 'Job Interview')
-    context = f"CONTEXT DOCUMENTS: {st.session_state.kb_content[:5000]}\nUSER DATA: {st.session_state.res_content[:5000]}"
+    context = f"KNOWLEDGE BASE: {st.session_state.kb_content[:6000]}\nUSER DOCUMENTS: {st.session_state.res_content[:6000]}"
     
-    # Determine who the AI is based on selected role
     if "AI is Applicant" in role:
-        persona = f"ACT AS: A job applicant named Rod Salmeo. Tone: Professional/Polite."
+        persona = "ACT AS: Rod Salmeo (Job Applicant). Personality: Professional, technical, eager."
     elif "AI is Interviewer" in role:
-        persona = f"ACT AS: A high-level Professional Interviewer. Tone: Formal/Observant."
+        persona = "ACT AS: High-level Executive Recruiter. Personality: Formal, investigative, fair."
     elif "AI is Customer" in role:
-        persona = f"ACT AS: A Customer. Tone: Realistic/Direct."
+        persona = "ACT AS: A Customer with a specific need. Personality: Direct, realistic, emotional."
     else:
-        persona = f"ACT AS: A Professional Agent. Tone: Helpful/Efficient."
+        persona = "ACT AS: Professional Support Lead. Personality: Calm, empathetic, resolution-oriented."
 
     return f"""
     {persona}
     SCENARIO: {scenario}
-    DOCUMENT CONTEXT: {context}
+    DOCUMENTS: {context}
 
-    STRICT RULES:
-    1. Stay in character for the dialogue.
-    2. Respond in Spanish ONLY for the character part.
-    3. Use the following XML tags for every response:
-    
+    INSTRUCTIONS:
+    1. Respond naturally in Spanish dialogue first.
+    2. Provide an Elite Coaching block. 
+    3. If User is Applicant, evaluate if they used the STAR method (Situation, Task, Action, Result).
+    4. Focus on 'False Cognates' (e.g., 'asistir' vs 'atender') and 'Subjunctive' usage.
+
+    STRICT FORMAT:
     <SIM>
-    [Character response in Spanish]
+    [Character response in Spanish - keep it immersive]
     </SIM>
     
     <COACH>
-    **Feedback on User's Spanish:** (Correct their grammar, vocabulary, and professional tone)
-    **Learning Point:** (Explain 1-2 professional Spanish words you used in your response)
+    **Spanish Correction:** (Directly fix user's grammar/vocab mistakes)
+    **Executive Vocabulary:** (1 high-level phrase used in the response to learn)
+    **Professional Strategy:** (Feedback on their soft skills/tone)
     **Scores:** G: (1-10), E: (1-10), R: (1-10)
     </COACH>
     """
 
-# ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR & EXPORT =================
 with st.sidebar:
-    st.title("🏆 Coach Settings")
-    st.session_state.role = st.selectbox("Current Mode", [
+    st.title("🏆 Elite Prep Console")
+    st.session_state.role = st.selectbox("Role-Play Mode", [
         "User as Interviewer (AI is Applicant)",
         "User as Applicant (AI is Interviewer)",
         "User as Agent (AI is Customer)",
         "User as Customer (AI is Agent)"
     ])
-    st.session_state.scenario = st.text_input("Custom Scenario", "Job Interview for Virtual Assistant")
+    st.session_state.scenario = st.text_input("Simulation Scenario", "Professional Interview")
     
     st.divider()
-    st.subheader("📂 Upload Context")
-    kb_files = st.file_uploader("Company SOPs / Details", accept_multiple_files=True)
-    if kb_files: st.session_state.kb_content = extract_text(kb_files)
-    else: st.session_state.kb_content = ""
+    st.subheader("📂 Training Documents")
+    kb_up = st.file_uploader("Company Docs/SOPs", accept_multiple_files=True)
+    if kb_up: st.session_state.kb_content = extract_text(kb_up)
         
-    res_files = st.file_uploader("Your Resume / Bio", accept_multiple_files=True)
-    if res_files: st.session_state.res_content = extract_text(res_files)
-    else: st.session_state.res_content = ""
+    res_up = st.file_uploader("Your Resume/Background", accept_multiple_files=True)
+    if res_up: st.session_state.res_content = extract_text(res_up)
 
-    if st.button("🗑️ Reset Coaching"):
-        st.session_state.messages = []
-        st.session_state.metrics = {"G": [], "E": [], "R": []}
-        st.session_state.last_processed_id = ""
+    if st.button("🗑️ Reset All", use_container_width=True):
+        for key in state_keys: st.session_state[key] = state_keys[key]
         st.rerun()
 
-# ================= 5. MAIN UI =================
+    # --- Export Feature ---
+    if st.session_state.messages:
+        st.divider()
+        transcript = ""
+        for m in st.session_state.messages:
+            transcript += f"{m['role'].upper()}: {m['content']}\n\n"
+        st.download_button("📥 Download Transcript", transcript, file_name="coaching_session.txt")
+
+# ================= 5. MAIN UI & DASHBOARD =================
 st.title("🇪🇸 Elite Spanish Professional Coach")
 
-# Performance Dashboard
 if st.session_state.metrics["G"]:
-    m1, m2, m3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
     avg = lambda k: sum(st.session_state.metrics[k])/len(st.session_state.metrics[k])
-    m1.metric("Grammar Accuracy", f"{avg('G'):.1f}/10")
-    m2.metric("Professional Empathy", f"{avg('E'):.1f}/10")
-    m3.metric("Result / Outcome", f"{avg('R'):.1f}/10")
+    c1.metric("Grammar Accuracy", f"{avg('G'):.1f}/10")
+    c2.metric("Professional Tone", f"{avg('E'):.1f}/10")
+    c3.metric("Result Efficiency", f"{avg('R'):.1f}/10")
     st.divider()
 
-# Message Display
+# Render Messages
 for i, m in enumerate(st.session_state.messages):
     with st.chat_message(m["role"]):
-        # Use Regex to separate SIM and COACH
-        sim_match = re.search(r'<SIM>(.*?)</SIM>', m["content"], re.DOTALL)
-        coach_match = re.search(r'<COACH>(.*?)</COACH>', m["content"], re.DOTALL)
+        sim_m = re.search(r'<SIM>(.*?)</SIM>', m["content"], re.DOTALL)
+        coach_m = re.search(r'<COACH>(.*?)</COACH>', m["content"], re.DOTALL)
         
-        if sim_match:
-            st.markdown(f"#### {sim_match.group(1).strip()}")
-            # Play audio stored specifically for THIS message
+        if sim_m:
+            st.markdown(f"#### {sim_m.group(1).strip()}")
             if "audio" in m:
                 st.audio(m["audio"], format="audio/mp3")
-                
-            if coach_match:
-                with st.expander("📝 View Coaching Analysis", expanded=(i == len(st.session_state.messages)-1)):
-                    st.info(coach_match.group(1).strip())
+            if coach_m:
+                with st.expander("📝 Coaching Analysis", expanded=(i == len(st.session_state.messages)-1)):
+                    st.markdown(coach_m.group(1).strip())
         else:
-            # Fallback for system or start messages
             st.write(m["content"])
 
-# ================= 6. INPUT LOGIC (ANTI-LOOP) =================
-user_input = None
+# ================= 6. INPUT LOGIC =================
+user_msg = None
 
-audio_data = st.audio_input("Respond in Spanish")
-if audio_data:
-    # Checksum to prevent reprocessing the same audio on rerun
-    current_id = hashlib.md5(audio_data.getvalue()).hexdigest()
-    if current_id != st.session_state.last_processed_id:
-        with st.spinner("Transcribing..."):
+# Audio input with anti-loop hash
+audio_in = st.audio_input("Speak in Spanish")
+if audio_in:
+    aud_hash = hashlib.md5(audio_in.getvalue()).hexdigest()
+    if aud_hash != st.session_state.last_processed_id:
+        with st.status("Transcribing..."):
             try:
                 res = client.audio.transcriptions.create(
-                    file=("file.wav", audio_data.getvalue()),
+                    file=("file.wav", audio_in.getvalue()),
                     model="whisper-large-v3",
                     language="es"
                 )
-                user_input = res.text
-                st.session_state.last_processed_id = current_id
-            except: st.error("Transcription failed.")
+                user_msg = res.text
+                st.session_state.last_processed_id = aud_hash
+            except: st.error("Transcription Error.")
 
-text_in = st.chat_input("Type your response...")
-if text_in: user_input = text_in
+text_in = st.chat_input("Type your response here...")
+if text_in: user_msg = text_in
 
-# ================= 7. AI BRAIN =================
-if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
+# ================= 7. AI ENGINE =================
+if user_msg:
+    st.session_state.messages.append({"role": "user", "content": user_msg})
     
     with st.chat_message("assistant"):
-        # Build clean history (strip coaching tags)
+        # Create history for AI context (Dialogue only)
         history = []
-        for m in st.session_state.messages[-8:]:
-            sim_only = re.search(r'<SIM>(.*?)</SIM>', m["content"], re.DOTALL)
-            history.append({"role": m["role"], "content": sim_only.group(1) if sim_only else m["content"]})
+        for m in st.session_state.messages[-10:]:
+            match = re.search(r'<SIM>(.*?)</SIM>', m["content"], re.DOTALL)
+            history.append({"role": m["role"], "content": match.group(1) if match else m["content"]})
         
         try:
-            # AI Inference
-            model = "llama-3.3-70b-versatile"
+            # Inference (Llama 70B for high-quality coaching)
             try:
-                response = client.chat.completions.create(model=model, messages=[{"role": "system", "content": get_system_prompt()}] + history)
+                model = "llama-3.3-70b-versatile"
+                response = client.chat.completions.create(model=model, messages=[{"role": "system", "content": get_system_prompt()}] + history, temperature=0.7)
             except:
                 response = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": get_system_prompt()}] + history)
             
-            full_text = response.choices[0].message.content
+            answer = response.choices[0].message.content
             
-            # Parse Simulation Text
-            sim_text = re.search(r'<SIM>(.*?)</SIM>', full_text, re.DOTALL)
-            coach_text = re.search(r'<COACH>(.*?)</COACH>', full_text, re.DOTALL)
+            # Parsing SIM and COACH
+            sim_block = re.search(r'<SIM>(.*?)</SIM>', answer, re.DOTALL)
+            coach_block = re.search(r'<COACH>(.*?)</COACH>', answer, re.DOTALL)
             
-            if sim_text:
-                clean_sim = sim_text.group(1).strip()
+            if sim_block:
+                clean_sim = sim_block.group(1).strip()
                 st.markdown(f"#### {clean_sim}")
                 
-                # Generate Audio
+                # TTS Generation (Dialogue only)
                 tts = gTTS(text=re.sub(r'[*#_~-]', '', clean_sim), lang='es')
-                audio_buf = io.BytesIO()
-                tts.write_to_fp(audio_buf)
-                audio_bytes = audio_buf.getvalue()
+                buf = io.BytesIO()
+                tts.write_to_fp(buf)
+                aud_bytes = buf.getvalue()
+                st.audio(aud_bytes, format="audio/mp3")
                 
-                st.audio(audio_bytes, format="audio/mp3")
+                if coach_block:
+                    coach_data = coach_block.group(1).strip()
+                    with st.expander("📝 Coaching Analysis", expanded=True):
+                        st.markdown(coach_data)
+                    
+                    # Robust Metric Extraction
+                    s_g = re.search(r'G:\s*(\d+)', coach_data)
+                    s_e = re.search(r'E:\s*(\d+)', coach_data)
+                    s_r = re.search(r'R:\s*(\d+)', coach_data)
+                    if s_g and s_e and s_r:
+                        st.session_state.metrics["G"].append(int(s_g.group(1)))
+                        st.session_state.metrics["E"].append(int(s_e.group(1)))
+                        st.session_state.metrics["R"].append(int(s_r.group(1)))
                 
-                if coach_text:
-                    with st.expander("📝 View Coaching Analysis", expanded=True):
-                        st.info(coach_text.group(1).strip())
-                    # Scores
-                    scores = re.findall(r'[GER]:\s*(\d+)', coach_text.group(1))
-                    if len(scores) >= 3:
-                        st.session_state.metrics["G"].append(int(scores[0]))
-                        st.session_state.metrics["E"].append(int(scores[1]))
-                        st.session_state.metrics["R"].append(int(scores[2]))
-                
-                # SAVE MESSAGE WITH AUDIO BYTES
-                st.session_state.messages.append({"role": "assistant", "content": full_text, "audio": audio_bytes})
+                # Final Persistence
+                st.session_state.messages.append({"role": "assistant", "content": answer, "audio": aud_bytes})
+                st.rerun()
             else:
-                st.write(full_text)
-            
-            st.rerun()
-
+                st.write(answer)
+        
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Engine Error: {e}")
 
-# ================= 8. STARTUP =================
+# ================= 8. INITIAL TRIGGER =================
 if not st.session_state.messages:
+    # No Coaching on start message
     if "AI is Applicant" in st.session_state.role:
-        start = "<SIM>Hola, mucho gusto. Gracias por recibirme hoy. Estoy listo para comenzar la entrevista cuando usted diga.</SIM>"
+        start = "<SIM>Hola, mucho gusto. Es un placer estar aquí. He traído mi currículum y estoy listo para comenzar cuando usted diga.</SIM>"
     elif "AI is Interviewer" in st.session_state.role:
-        start = "<SIM>Bienvenido. He revisado su perfil y estoy interesado en conocer más sobre usted. ¿Podría comenzar presentándose?</SIM>"
+        start = "<SIM>Bienvenido. He revisado su perfil y documentos. Para comenzar, ¿podría presentarse y hablarme de su experiencia?</SIM>"
     else:
-        start = "<SIM>Llamada conectada. Hola, ¿en qué puedo ayudarle hoy?</SIM>"
+        start = "<SIM>Llamada conectada. Hola, buenos días. ¿En qué puedo ayudarle hoy?</SIM>"
     
     st.session_state.messages.append({"role": "assistant", "content": start})
     st.rerun()
