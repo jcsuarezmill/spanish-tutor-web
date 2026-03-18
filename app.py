@@ -13,14 +13,14 @@ st.markdown("""
     .stChatMessage { border-radius: 15px; padding: 15px; margin-bottom: 10px; border: 1px solid #e0e0e0; }
     .persona-label { color: #1a73e8; font-weight: bold; font-size: 1.1rem; margin-bottom: 5px; }
     .coach-card { 
-        background-color: #f1f8e9; 
-        border-left: 6px solid #4caf50; 
+        background-color: #fff9c4; 
+        border-left: 6px solid #fbc02d; 
         padding: 18px; 
         border-radius: 12px; 
         margin-top: 15px;
-        color: #1b5e20;
+        color: #424242;
     }
-    .feedback-header { color: #2e7d32; font-weight: bold; text-transform: uppercase; font-size: 0.85rem; margin-bottom: 8px; }
+    .feedback-header { color: #f57f17; font-weight: bold; text-transform: uppercase; font-size: 0.85rem; margin-bottom: 8px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -28,7 +28,7 @@ st.markdown("""
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 except:
-    st.error("🔑 API Key Missing. Add your new key to '.streamlit/secrets.toml' as GROQ_API_KEY")
+    st.error("🔑 API Key Missing. Please add GROQ_API_KEY to your Streamlit Secrets.")
     st.stop()
 
 # ================= 2. SESSION STATE =================
@@ -42,51 +42,58 @@ if "reset_key" not in st.session_state: st.session_state.reset_key = 0
 
 def get_dual_prompt():
     is_agent = "Agent" in st.session_state.user_role
-    persona = "A frustrated customer" if is_agent else "An ELITE BPO Professional Agent"
+    persona = "A FRUSTRATED CUSTOMER (Speak with emotion)" if is_agent else "AN ELITE BPO PROFESSIONAL AGENT (Speak with perfect empathy)"
     
     return f"""
-    SYSTEM ROLE: You are an Elite Spanish Coach. 
-    1. ACT AS: {persona}. SCENARIO: {st.session_state.scenario}. LEVEL: {st.session_state.level}.
-    2. COACHING: Provide high-level feedback after '---'.
+    SYSTEM ROLE: 
+    1. ACT AS: {persona}. Your name is Juan/Maria. 
+    2. SCENARIO: {st.session_state.scenario}. 
+    3. CURRENT LEVEL: {st.session_state.level}.
 
-    STRICT FEEDBACK STRUCTURE:
-    [Spanish Dialogue Only]
+    STRICT RESPONSE RULE:
+    - You MUST start your response with a direct reply in character.
+    - If you are the Customer, react to what the Agent said.
+    - If you are the Agent, provide professional service.
+    - After your character dialogue, add a separator '---' and then provide COACHING feedback.
+
+    OUTPUT FORMAT:
+    [Character Speech in Spanish]
     ---
     **COACH'S CORNER**
-    - **Spiel & Phrasing:** (Critique the dialogue and provide a 'Golden Phrase' alternative)
-    - **Soft Skills & Tone:** (Rate professionalism 1-10)
-    - **Voice & Pronunciation:** (Analyze the transcription for clarity. If words seem misspelled in the transcript, suggest it might be a pronunciation issue.)
-    - **Pro Tip:** (One trick to sound like a native professional)
+    - **Spiel & Phrasing:** (Critique and provide a 'Golden Phrase' alternative)
+    - **Soft Skills & Tone:** (Rate 1-10)
+    - **Voice & Pronunciation:** (Analyze transcription)
+    - **Pro Tip:** (One trick for BPO success)
     """
 
 def get_ai_response(user_input):
-    history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages[-6:]]
+    # --- CRITICAL FIX: HISTORY SCRUBBING ---
+    # We strip the "Coach's Corner" from previous AI messages so the AI doesn't get confused.
+    scrubbed_history = []
+    for m in st.session_state.messages[-6:]:
+        content = m["content"]
+        if "---" in content:
+            content = content.split("---")[0].strip() # Take only the dialogue part
+        scrubbed_history.append({"role": m["role"], "content": content})
     
-    # LIST OF MODELS FOR FALLBACK (70b -> 8b)
-    # If the smart one is rate-limited, use the fast one.
     models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
     
     for model in models:
         try:
             completion = client.chat.completions.create(
                 model=model,
-                messages=[{"role": "system", "content": get_dual_prompt()}] + history + [{"role": "user", "content": user_input}],
-                temperature=0.7
+                messages=[{"role": "system", "content": get_dual_prompt()}] + scrubbed_history + [{"role": "user", "content": user_input}],
+                temperature=0.8 # Slightly higher for more realistic personality
             )
             return completion.choices[0].message.content
         except Exception as e:
-            if "429" in str(e) and model != models[-1]:
-                continue # Try the next model in the list
+            if "429" in str(e) and model != models[-1]: continue
             return f"⚠️ Error: {str(e)}"
 
 def speak(text):
-    """Clean text and convert to audio."""
     try:
-        # 1. Take only the Spanish dialogue
         dialogue = text.split("---")[0].strip()
-        # 2. REMOVE ALL ASTERISKS AND MARKDOWN SYMBOLS FOR THE VOICE
         clean_text = re.sub(r'[*#_~]', '', dialogue)
-        
         tts = gTTS(text=clean_text, lang='es')
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
             tts.save(fp.name)
@@ -96,21 +103,22 @@ def speak(text):
 # ================= 4. SIDEBAR =================
 with st.sidebar:
     st.title("🎧 Training Center")
-    st.session_state.user_role = st.radio("Switch Your Role:", 
-                                         ["Agent (User handles call)", "Customer (AI handles call)"])
+    new_role = st.radio("Switch Your Role:", ["Agent (User handles call)", "Customer (AI handles call)"])
+    if new_role != st.session_state.user_role:
+        st.session_state.user_role = new_role
+        st.session_state.messages = [] # Reset on role change for fresh start
+        st.rerun()
+
     st.divider()
     st.session_state.level = st.select_slider("My Target Level", ["A1", "A2", "B1", "B2", "C1", "C2"], value=st.session_state.level)
+    st.session_state.scenario = st.selectbox("Scenario", ["Billing Complaint", "Tech Support", "Medical VA", "Real Estate Inquiry", "CUSTOM"])
     
-    st.session_state.scenario = st.selectbox("Scenario", ["Billing Complaint", "Tech Support", "Medical VA", "Hiring Interview", "CUSTOM"])
-    if st.session_state.scenario == "CUSTOM":
-        st.session_state.scenario = st.text_input("Describe scenario:")
-
-    if st.button("🗑️ New Call / Clear Chat", use_container_width=True):
+    if st.button("🗑️ Reset Interaction", use_container_width=True):
         st.session_state.messages = []
         st.session_state.reset_key += 1
         st.rerun()
 
-# ================= 5. MAIN CHAT UI =================
+# ================= 5. CHAT UI =================
 st.title("🇪🇸 BPO Professional Dual-Coach")
 st.info(f"**MODE:** You are the **{'AGENT' if 'Agent' in st.session_state.user_role else 'CUSTOMER'}**")
 
@@ -129,14 +137,13 @@ for msg in st.session_state.messages:
 
 # Input Logic
 final_input = None
-audio_data = st.audio_input("Record your voice", key=f"audio_{st.session_state.reset_key}")
-
+audio_data = st.audio_input("Record your response", key=f"audio_{st.session_state.reset_key}")
 if audio_data:
     with st.status("Transcribing...", expanded=False):
         transcript = client.audio.transcriptions.create(file=("in.wav", audio_data.getvalue()), model="whisper-large-v3", language="es", response_format="text")
         final_input = transcript
 
-text_data = st.chat_input("Type your response...")
+text_data = st.chat_input("Type here...")
 if text_data: final_input = text_data
 
 # ================= 6. EXECUTION =================
@@ -144,7 +151,7 @@ if final_input:
     st.session_state.messages.append({"role": "user", "content": final_input})
     
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing interaction..."):
+        with st.spinner("Wait, the character is responding..."):
             full_resp = get_ai_response(final_input)
             audio_path = speak(full_resp)
             
