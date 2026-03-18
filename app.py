@@ -2,20 +2,34 @@ import streamlit as st
 from groq import Groq
 from gtts import gTTS
 import tempfile
+import os
 import re
+from PyPDF2 import PdfReader
+from bs4 import BeautifulSoup
 
-# ================= 1. CONFIG & UI =================
-st.set_page_config(page_title="Coach AI: BPO & Interview", layout="wide")
+# ================= 1. FILE PARSING UTILITIES =================
+def extract_text(uploaded_file):
+    """Extracts text from PDF, HTML, or TXT."""
+    if uploaded_file is None:
+        return ""
+    
+    file_type = uploaded_file.name.split('.')[-1].lower()
+    
+    try:
+        if file_type == 'pdf':
+            reader = PdfReader(uploaded_file)
+            return " ".join([page.extract_text() for page in reader.pages])
+        elif file_type == 'html':
+            soup = BeautifulSoup(uploaded_file.read(), 'html.parser')
+            return soup.get_text()
+        else: # Treat as txt
+            return uploaded_file.read().decode("utf-8")
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+        return ""
 
-# Custom CSS for better chat bubbles and status
-st.markdown("""
-    <style>
-    .reportview-container { background: #f0f2f6; }
-    .stChatMessage { border-radius: 10px; border: 1px solid #ddd; }
-    .feedback-box { background-color: #f9f9f9; border-left: 5px solid #4CAF50; padding: 10px; margin-top: 10px; font-size: 0.9em; }
-    .score-tag { font-weight: bold; color: #1565c0; }
-    </style>
-""", unsafe_allow_html=True)
+# ================= 2. UI SETUP =================
+st.set_page_config(page_title="Elite Spanish Coach", layout="wide")
 
 # API Initialization
 if "GROQ_API_KEY" in st.secrets:
@@ -24,129 +38,144 @@ else:
     st.error("Missing GROQ_API_KEY in secrets.")
     st.stop()
 
-# ================= 2. SESSION STATE =================
+# ================= 3. SESSION STATE =================
 if "messages" not in st.session_state: st.session_state.messages = []
-if "session_id" not in st.session_state: st.session_state.session_id = 0
+if "kb_text" not in st.session_state: st.session_state.kb_text = ""
+if "resume_text" not in st.session_state: st.session_state.resume_text = ""
 
-# ================= 3. LOGIC ENGINES =================
+# ================= 4. PROMPT ENGINE =================
+def get_system_prompt():
+    role = st.session_state.role_mode
+    scenario = st.session_state.custom_scenario
+    kb = st.session_state.kb_text
+    resume = st.session_state.resume_text
+    level = st.session_state.target_level
 
-def generate_system_prompt():
-    """Dynamically builds the prompt based on the chosen role."""
-    role_mode = st.session_state.get('role_mode', 'User as Applicant')
-    kb = st.session_state.get('kb_data', '')
-    resume = st.session_state.get('resume_data', '')
-    level = st.session_state.get('target_level', 'B2')
-    
-    base_instructions = f"Act strictly according to the role. Language: Spanish. Proficiency Level: {level}."
-    
-    if role_mode == "User as Interviewee (AI is Interviewer)":
-        persona = f"You are a Hiring Manager. Use this Company Info: {kb}. Interview the user based on their Resume: {resume}. Be professional, challenging, and stay in character."
-    elif role_mode == "User as Interviewer (AI is Applicant)":
-        persona = f"You are a candidate applying for a job. Your resume/experience is: {resume}. The company you are applying to is: {kb}. Answer the interviewer's questions naturally, occasionally making small mistakes typical of a {level} level student for the coach to correct."
-    elif role_mode == "User as Agent (AI is Customer)":
-        persona = f"You are a customer calling a BPO center. Company SOPs: {kb}. Be realistic, sometimes frustrated, but stay focused on the scenario."
-    else: # User as Customer (AI is Agent)
-        persona = f"You are an Elite BPO Agent. Use these SOPs: {kb}. Provide perfect service."
+    # Context Construction
+    context = f"SCENARIO: {scenario}\nLEVEL: {level}\n"
+    if kb: context += f"COMPANY/PRODUCT DATA: {kb[:2000]}\n" # Truncated for token safety
+    if resume: context += f"USER/CANDIDATE DATA: {resume[:2000]}\n"
+
+    # Role Mapping
+    if "AI is Interviewer" in role:
+        persona = "You are a Hiring Manager. Use the Company Data and User Resume to ask tough, specific interview questions in Spanish."
+    elif "AI is Applicant" in role:
+        persona = "You are a candidate being interviewed. Use the User Resume as YOUR background and the Company Data as the place you want to work."
+    elif "AI is Customer" in role:
+        persona = "You are a customer. Use the Company Data to complain or ask about specific services/products. Be realistic."
+    else:
+        persona = "You are a professional BPO Agent providing support based on the Company Data."
 
     return f"""
-    SYSTEM PERSONA: {persona}
-    CONTEXT: {base_instructions}
-    
-    IMPORTANT: Your response MUST be in two parts separated by '---FEEDBACK---'.
-    Part 1: The direct Spanish response in character.
-    Part 2: A short analysis of the USER'S last message (Grammar, Vocabulary, and a 'Golden Phrase' in Spanish).
+    SYSTEM ROLE: {persona}
+    {context}
+
+    STRICT OUTPUT FORMAT:
+    [Spanish Dialogue ONLY]
+    ---FEEDBACK---
+    **Elite Coach Analysis**
+    - **Mistakes Found:** (Correct any grammar/vocab errors the user made)
+    - **Pro Phrase:** (A high-level Spanish 'Golden Phrase' for this exact moment)
+    - **Tone Check:** (Was the user professional? Score 1-10)
     """
 
-def get_clean_history():
-    """Filters out coaching feedback so the AI memory isn't cluttered."""
-    clean = []
-    for m in st.session_state.messages[-6:]: # Last 6 messages for context
-        content = m["content"]
-        if "---FEEDBACK---" in content:
-            content = content.split("---FEEDBACK---")[0]
-        clean.append({"role": m["role"], "content": content})
-    return clean
-
-# ================= 4. SIDEBAR & TOOLS =================
+# ================= 5. SIDEBAR (RESOURCE CENTER) =================
 with st.sidebar:
-    st.header("🛠️ Simulation Settings")
+    st.title("🛡️ Simulation Control")
     
     st.session_state.role_mode = st.selectbox("Roleplay Mode", [
-        "User as Interviewee (AI is Interviewer)",
+        "User as Applicant (AI is Interviewer)",
         "User as Interviewer (AI is Applicant)",
         "User as Agent (AI is Customer)",
         "User as Customer (AI is Agent)"
     ])
     
-    st.session_state.target_level = st.select_slider("Target Spanish Level", ["A2", "B1", "B2", "C1"])
+    st.session_state.target_level = st.select_slider("Target Level", ["A2", "B1", "B2", "C1", "C2"])
     
-    st.divider()
-    st.subheader("📄 Knowledge Injection")
-    st.session_state.kb_data = st.text_area("Company Details / Job Description", placeholder="Paste company info or product details...")
-    st.session_state.resume_data = st.text_area("Your Resume / Candidate Bio", placeholder="Paste your resume or the AI's persona bio...")
+    st.session_state.custom_scenario = st.text_area("🚩 Define Custom Scenario", 
+        placeholder="Example: The customer is angry about a late delivery... or: Interview for a Senior Manager role.",
+        value="General professional interaction")
 
-    if st.button("Clear Session"):
+    st.divider()
+    
+    # File Uploaders
+    st.subheader("📄 Upload Knowledge Base")
+    kb_file = st.file_uploader("Upload Company SOP, Manual, or Website (PDF/HTML)", type=['pdf', 'html', 'txt'])
+    if kb_file:
+        st.session_state.kb_text = extract_text(kb_file)
+        st.success("KB Loaded!")
+
+    st.subheader("👤 Upload Resume")
+    res_file = st.file_uploader("Upload Resume or Candidate Profile", type=['pdf', 'html', 'txt'])
+    if res_file:
+        st.session_state.resume_text = extract_text(res_file)
+        st.success("Resume Loaded!")
+
+    if st.button("🗑️ Reset Simulation", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
-# ================= 5. CHAT INTERFACE =================
-st.title("🚀 Elite BPO & Interview Coach")
-st.info(f"Current Mode: {st.session_state.role_mode} | Level: {st.session_state.target_level}")
+# ================= 6. MAIN INTERFACE & LOGIC =================
+st.title("🚀 Elite BPO & Interview Simulator")
 
-# Display Chat
+# Display Messages
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if "---FEEDBACK---" in msg["content"]:
-            text, feedback = msg["content"].split("---FEEDBACK---")
-            st.write(text.strip())
-            with st.expander("📝 Coaching & Feedback"):
-                st.markdown(feedback.strip())
+            parts = msg["content"].split("---FEEDBACK---")
+            st.markdown(parts[0])
+            with st.expander("📝 Coach's Corner"):
+                st.markdown(parts[1])
         else:
-            st.write(msg["content"])
+            st.markdown(msg["content"])
 
-# Input Handling
+# Input Logic
 user_input = None
-audio_input = st.audio_input("Respond in Spanish")
-text_input = st.chat_input("Type your response...")
+audio_data = st.audio_input("Speak Spanish")
+text_data = st.chat_input("Type your response...")
 
-if audio_input:
-    with st.spinner("Transcribing..."):
+if audio_data:
+    with st.status("Transcribing..."):
         transcript = client.audio.transcriptions.create(
-            file=("audio.wav", audio_input.getvalue()),
-            model="whisper-large-v3",
+            file=("speech.wav", audio_data.getvalue()), 
+            model="whisper-large-v3", 
             language="es"
         )
         user_input = transcript.text
 
-if text_input:
-    user_input = text_input
+if text_data: user_input = text_data
 
-# ================= 6. RESPONSE GENERATION =================
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"): st.write(user_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "system", "content": generate_system_prompt()}] + get_clean_history() + [{"role": "user", "content": user_input}]
-            )
-            full_res = response.choices[0].message.content
+        # We pass only the last 10 messages for context, excluding the feedback parts
+        history = []
+        for m in st.session_state.messages[-10:]:
+            content = m["content"].split("---FEEDBACK---")[0]
+            history.append({"role": m["role"], "content": content})
+
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": get_system_prompt()}] + history
+        )
+        
+        full_response = completion.choices[0].message.content
+        
+        if "---FEEDBACK---" in full_response:
+            dialogue = full_response.split("---FEEDBACK---")[0]
+            st.markdown(dialogue)
             
-            if "---FEEDBACK---" in full_res:
-                ans_text, ans_feedback = full_res.split("---FEEDBACK---")
-                st.write(ans_text.strip())
+            # TTS
+            tts = gTTS(text=re.sub(r'[*#_~-]', '', dialogue), lang='es')
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+                tts.save(fp.name)
+                st.audio(fp.name)
                 
-                # TTS for dialogue only
-                tts = gTTS(text=ans_text.strip(), lang='es')
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-                    tts.save(fp.name)
-                    st.audio(fp.name)
-                
-                with st.expander("📝 Coaching & Feedback"):
-                    st.markdown(ans_feedback.strip())
-            else:
-                st.write(full_res)
+            with st.expander("📝 Coach's Corner"):
+                st.markdown(full_response.split("---FEEDBACK---")[1])
+        else:
+            st.markdown(full_response)
             
-            st.session_state.messages.append({"role": "assistant", "content": full_res})
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
