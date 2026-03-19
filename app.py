@@ -125,7 +125,7 @@ with header_col1:
 
 with header_col2:
     if st.session_state.phase == "simulating":
-        if st.button("🛑 END CALL", type="primary", use_container_width=True):
+        if st.button("🛑 END CALL & ANALYZE", type="primary", use_container_width=True):
             st.session_state.phase = "debrief"
             st.rerun()
     else:
