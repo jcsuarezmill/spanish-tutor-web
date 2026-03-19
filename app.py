@@ -71,18 +71,11 @@ def get_debrief_prompt(messages):
     You are the 'Elite Spanish Business Coach'. Analyze this transcript:
     {transcript}
     
-    Provide a detailed "Executive Debrief" in English:
-    
-    1. **Outcome**: Did the user successfully navigate the scenario?
-    2. **STAR Method Analysis**: 
-       - Evaluate if the user used the STAR method (Situation, Task, Action, Result).
-       - Give a STAR Alignment Score (0-100%).
-    3. **The Elite Alternative (Spanish)**: 
-       - Pick a key response the user gave. 
-       - Rewrite it as a "Gold Standard" STAR response in professional Spanish. 
-       - Explain why this version is superior.
-    4. **Grammar & Tone**: Top 3 specific errors and professional corrections.
-    5. **Scores**: G: (1-10), E: (1-10), R: (1-10), S: (1-10) [S is STAR Score]
+    Provide:
+    1. Outcome: Did the user succeed in the scenario?
+    2. Grammar: Top 3 specific errors and corrections.
+    3. Power Words: 5 high-level business terms to use instead.
+    4. Scores: G: (1-10), E: (1-10), R: (1-10)
     """
 
 def safe_chat_completion(messages):
@@ -95,10 +88,11 @@ def safe_chat_completion(messages):
 with st.sidebar:
     st.title("⚙️ Configuration")
     
+    # SCENARIO FORM (Pressing Enter here resets the session with the new scenario)
     with st.form("scenario_form"):
         new_role = st.selectbox("Your Role", [
-            "User as Applicant (AI is Interviewer)",
             "User as Interviewer (AI is Applicant)",
+            "User as Applicant (AI is Interviewer)",
             "User as Agent (AI is Customer)",
             "User as Customer (AI is Agent)"
         ])
@@ -121,12 +115,13 @@ with st.sidebar:
     st.session_state.res_content = extract_text(res_files) if res_files else ""
 
 # ================= 5. TOP CONTROL BAR =================
+# This is the "Intuitive Area" for ending the call
 header_col1, header_col2 = st.columns([4, 1])
 with header_col1:
     if st.session_state.phase == "simulating":
         st.markdown(f"### 🟢 Live Session: *{st.session_state.scenario}*")
     else:
-        st.markdown("### 📊 STAR Performance Review")
+        st.markdown("### 📊 Performance Review")
 
 with header_col2:
     if st.session_state.phase == "simulating":
@@ -161,17 +156,17 @@ if st.session_state.phase == "simulating":
     # Input handling
     user_input = None
     
+    # Audio Input
     audio_data = st.audio_input("Respond in Spanish")
     if audio_data:
         curr_id = hashlib.md5(audio_data.getvalue()).hexdigest()
         if curr_id != st.session_state.last_processed_id:
             with st.spinner("Transcribing..."):
-                try:
-                    res = client.audio.transcriptions.create(file=("f.wav", audio_data.getvalue()), model="whisper-large-v3", language="es")
-                    user_input = res.text
-                    st.session_state.last_processed_id = curr_id
-                except: st.error("Transcription error.")
+                res = client.audio.transcriptions.create(file=("f.wav", audio_data.getvalue()), model="whisper-large-v3", language="es")
+                user_input = res.text
+                st.session_state.last_processed_id = curr_id
 
+    # Text Input
     text_in = st.chat_input("Type your Spanish response...")
     if text_in: user_input = text_in
 
@@ -182,37 +177,30 @@ if st.session_state.phase == "simulating":
             response = safe_chat_completion([{"role": "system", "content": get_sim_prompt()}] + history)
             ans = response.choices[0].message.content
             
+            # Audio Generation
             tts = gTTS(text=re.sub(r'[*#_~-]', '', ans), lang='es')
             buf = io.BytesIO()
             tts.write_to_fp(buf)
             st.session_state.messages.append({"role": "assistant", "content": ans, "audio": buf.getvalue()})
             st.rerun()
 
-# ================= 7. DEBRIEF UI (STAR METHOD ENABLED) =================
+# ================= 7. DEBRIEF UI =================
 else:
     if not st.session_state.final_report:
-        with st.spinner("Coach is calculating STAR scores and generating elite alternatives..."):
+        with st.spinner("Coach is reviewing the transcript..."):
             report = safe_chat_completion([{"role": "user", "content": get_debrief_prompt(st.session_state.messages)}])
             st.session_state.final_report = report.choices[0].message.content
 
-    # Metrics Extraction
-    scores = re.findall(r'[GERS]:\s*(\d+)', st.session_state.final_report)
-    if len(scores) >= 4:
-        m1, m2, m3, m4 = st.columns(4)
+    # Metrics
+    scores = re.findall(r'[GER]:\s*(\d+)', st.session_state.final_report)
+    if len(scores) >= 3:
+        m1, m2, m3 = st.columns(3)
         m1.metric("Grammar", f"{scores[0]}/10")
         m2.metric("Tone/Presence", f"{scores[1]}/10")
         m3.metric("Goal Success", f"{scores[2]}/10")
-        m4.metric("STAR Alignment", f"{scores[3]}/10", help="How well you used Situation, Task, Action, Result")
     
     st.markdown("---")
-    # Highlight the Elite Alternative section if found
-    content = st.session_state.final_report
-    if "Elite Alternative" in content:
-        parts = content.split("Elite Alternative")
-        st.markdown(parts[0])
-        st.success(f"### 💡 Elite STAR Alternative\n{parts[1]}")
-    else:
-        st.markdown(content)
+    st.markdown(st.session_state.final_report)
     
     with st.expander("Review Conversation Transcript"):
         for m in st.session_state.messages:
