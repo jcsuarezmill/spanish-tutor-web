@@ -35,6 +35,7 @@ if "phase" not in st.session_state: st.session_state.phase = "simulating"
 if "last_processed_id" not in st.session_state: st.session_state.last_processed_id = ""
 if "final_report" not in st.session_state: st.session_state.final_report = None
 if "scenario" not in st.session_state: st.session_state.scenario = "Job Interview for Virtual Assistant"
+if "role" not in st.session_state: st.session_state.role = "User as Applicant (AI is Interviewer)"
 
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
@@ -44,25 +45,26 @@ except:
 
 # ================= 3. PROMPTS =================
 def get_sim_prompt():
-    role = st.session_state.get('role', 'User as Applicant')
+    role = st.session_state.role
     scenario = st.session_state.scenario
-    context = f"DOCS: {st.session_state.get('kb_content','')[:2000]}\nUSER: {st.session_state.get('res_content','')[:1500]}"
+    context = f"DOCS: {st.session_state.get('kb_content','')[:2000]}\nUSER_BIO: {st.session_state.get('res_content','')[:1500]}"
     
     if "AI is Applicant" in role:
-        persona = "ACT AS: Rod Salmeo (Job Applicant). Tone: Professional/Polite."
+        persona = "ACT AS: Rod (Job Applicant). Tone: Professional/Eager."
     elif "AI is Interviewer" in role:
-        persona = "ACT AS: A strict but fair Professional Interviewer."
+        persona = "ACT AS: A Senior Executive Interviewer. Tone: Formal/Challenging."
     elif "AI is Customer" in role:
-        persona = "ACT AS: A frustrated but reasonable Customer."
+        persona = "ACT AS: A frustrated Business Client. Tone: Demanding/Direct."
     else:
-        persona = "ACT AS: A high-end Corporate Agent."
+        persona = "ACT AS: A high-end Corporate Liaison."
 
     return f"""
     {persona}
     SCENARIO: {scenario}
-    DOCUMENT CONTEXT: {context}
-    STRICT RULE: Respond ONLY in Spanish. NEVER provide coaching or English during the chat.
-    Keep it realistic and concise.
+    KNOWLEDGE BASE: {context}
+    STRICT RULE: Respond ONLY in Spanish. Stay in character 100%. 
+    NEVER explain that you are an AI. NEVER provide translations.
+    Keep responses short (1-3 sentences) to maintain conversation flow.
     """
 
 def get_debrief_prompt(messages):
@@ -71,35 +73,38 @@ def get_debrief_prompt(messages):
     You are the 'Elite Spanish Business Coach'. Analyze this transcript:
     {transcript}
     
-    Provide:
-    1. Outcome: Did the user succeed in the scenario?
-    2. Grammar: Top 3 specific errors and corrections.
-    3. Power Words: 5 high-level business terms to use instead.
-    4. Scores: G: (1-10), E: (1-10), R: (1-10)
+    Provide a professional evaluation in English:
+    1. **Executive Summary**: Did the user handle the situation effectively?
+    2. **Grammar & Tone Corrections**: List specific Spanish mistakes and their professional corrections.
+    3. **Sophisticated Alternatives**: Suggest 5 'Elite' business phrases they could have used.
+    4. **Metric Scores**: 
+       G Score: (number)/10
+       E Score: (number)/10
+       R Score: (number)/10
     """
 
 def safe_chat_completion(messages):
     try:
-        return client.chat.completions.create(model="llama-3.3-70b-versatile", messages=messages)
+        return client.chat.completions.create(model="llama-3.3-70b-versatile", messages=messages, temperature=0.7)
     except:
-        return client.chat.completions.create(model="llama-3.1-8b-instant", messages=messages)
+        return client.chat.completions.create(model="llama-3.1-8b-instant", messages=messages, temperature=0.7)
 
 # ================= 4. SIDEBAR (CONFIG) =================
 with st.sidebar:
-    st.title("⚙️ Configuration")
+    st.title("🏆 Coach Settings")
     
-    # SCENARIO FORM (Pressing Enter here resets the session with the new scenario)
-    with st.form("scenario_form"):
-        new_role = st.selectbox("Your Role", [
-            "User as Interviewer (AI is Applicant)",
+    with st.form("config_form"):
+        st.subheader("1. Scenario Setup")
+        new_role = st.selectbox("Mode", [
             "User as Applicant (AI is Interviewer)",
+            "User as Interviewer (AI is Applicant)",
             "User as Agent (AI is Customer)",
             "User as Customer (AI is Agent)"
-        ])
-        new_scenario = st.text_input("Scenario (Press Enter to Apply)", st.session_state.scenario)
-        submit_scenario = st.form_submit_button("Update & Restart Session")
+        ], index=0)
+        new_scenario = st.text_area("Scenario Specifics", st.session_state.scenario, help="Type the details and press Update.")
         
-        if submit_scenario:
+        submit = st.form_submit_button("Update & Restart Session")
+        if submit:
             st.session_state.role = new_role
             st.session_state.scenario = new_scenario
             st.session_state.messages = []
@@ -108,28 +113,26 @@ with st.sidebar:
             st.rerun()
     
     st.divider()
-    st.subheader("📂 Context Files")
-    kb_files = st.file_uploader("Company SOPs", accept_multiple_files=True)
+    st.subheader("2. Knowledge Upload")
+    kb_files = st.file_uploader("Upload Company Info", accept_multiple_files=True)
     st.session_state.kb_content = extract_text(kb_files) if kb_files else ""
-    res_files = st.file_uploader("Your Resume", accept_multiple_files=True)
+    
+    res_files = st.file_uploader("Upload Your Resume", accept_multiple_files=True)
     st.session_state.res_content = extract_text(res_files) if res_files else ""
 
-# ================= 5. TOP CONTROL BAR =================
-# This is the "Intuitive Area" for ending the call
-header_col1, header_col2 = st.columns([4, 1])
-with header_col1:
-    if st.session_state.phase == "simulating":
-        st.markdown(f"### 🟢 Live Session: *{st.session_state.scenario}*")
-    else:
-        st.markdown("### 📊 Performance Review")
+# ================= 5. HEADER CONTROL =================
+h_col1, h_col2 = st.columns([3, 1])
+with h_col1:
+    status = "🟢 LIVE SIMULATION" if st.session_state.phase == "simulating" else "📊 EVALUATION"
+    st.subheader(f"{status} | {st.session_state.role.split('(')[0]}")
 
-with header_col2:
+with h_col2:
     if st.session_state.phase == "simulating":
         if st.button("🛑 END CALL & ANALYZE", type="primary", use_container_width=True):
             st.session_state.phase = "debrief"
             st.rerun()
     else:
-        if st.button("🔄 RESTART", use_container_width=True):
+        if st.button("🔄 NEW SESSION", use_container_width=True):
             st.session_state.messages = []
             st.session_state.phase = "simulating"
             st.session_state.final_report = None
@@ -137,15 +140,16 @@ with header_col2:
 
 st.divider()
 
-# ================= 6. MAIN INTERACTION =================
+# ================= 6. MAIN SIMULATION =================
 if st.session_state.phase == "simulating":
-    # Greeting Logic
+    
+    # Auto-Greeting Logic
     if not st.session_state.messages:
-        role_type = st.session_state.get('role', '')
-        if "AI is Interviewer" in role_type: greeting = "Bienvenido. He revisado su perfil. ¿Podemos comenzar?"
-        elif "AI is Applicant" in role_type: greeting = "Hola, mucho gusto. Gracias por la oportunidad. ¿Gusta empezar?"
-        else: greeting = "Hola, ¿en qué puedo ayudarle hoy?"
-        st.session_state.messages.append({"role": "assistant", "content": greeting})
+        with st.spinner("Connecting to coach..."):
+            greeting_prompt = f"Based on the scenario '{st.session_state.scenario}', provide a short 1-sentence opening greeting in Spanish as the character."
+            res = safe_chat_completion([{"role": "system", "content": get_sim_prompt()}, {"role": "user", "content": greeting_prompt}])
+            st.session_state.messages.append({"role": "assistant", "content": res.choices[0].message.content})
+            st.rerun()
 
     # Display History
     for m in st.session_state.messages:
@@ -153,21 +157,23 @@ if st.session_state.phase == "simulating":
             st.markdown(m["content"])
             if "audio" in m: st.audio(m["audio"], format="audio/mp3")
 
-    # Input handling
+    # Input Logic
     user_input = None
     
-    # Audio Input
-    audio_data = st.audio_input("Respond in Spanish")
+    # Audio Row
+    audio_data = st.audio_input("Speak in Spanish")
     if audio_data:
         curr_id = hashlib.md5(audio_data.getvalue()).hexdigest()
         if curr_id != st.session_state.last_processed_id:
-            with st.spinner("Transcribing..."):
-                res = client.audio.transcriptions.create(file=("f.wav", audio_data.getvalue()), model="whisper-large-v3", language="es")
-                user_input = res.text
-                st.session_state.last_processed_id = curr_id
+            with st.spinner("Listening..."):
+                try:
+                    res = client.audio.transcriptions.create(file=("f.wav", audio_data.getvalue()), model="whisper-large-v3", language="es")
+                    user_input = res.text
+                    st.session_state.last_processed_id = curr_id
+                except: st.error("Audio processing failed.")
 
     # Text Input
-    text_in = st.chat_input("Type your Spanish response...")
+    text_in = st.chat_input("Or type your Spanish response...")
     if text_in: user_input = text_in
 
     if user_input:
@@ -177,31 +183,33 @@ if st.session_state.phase == "simulating":
             response = safe_chat_completion([{"role": "system", "content": get_sim_prompt()}] + history)
             ans = response.choices[0].message.content
             
-            # Audio Generation
+            # Voice Generation
             tts = gTTS(text=re.sub(r'[*#_~-]', '', ans), lang='es')
             buf = io.BytesIO()
             tts.write_to_fp(buf)
             st.session_state.messages.append({"role": "assistant", "content": ans, "audio": buf.getvalue()})
             st.rerun()
 
-# ================= 7. DEBRIEF UI =================
+# ================= 7. DEBRIEF PHASE =================
 else:
     if not st.session_state.final_report:
-        with st.spinner("Coach is reviewing the transcript..."):
+        with st.spinner("Elite Coach is evaluating your performance..."):
             report = safe_chat_completion([{"role": "user", "content": get_debrief_prompt(st.session_state.messages)}])
             st.session_state.final_report = report.choices[0].message.content
 
-    # Metrics
-    scores = re.findall(r'[GER]:\s*(\d+)', st.session_state.final_report)
+    # Robust Metric Extraction (Handles variations like "G Score: 8" or "G: 8")
+    metrics = {"Grammar": 0, "Tone": 0, "Result": 0}
+    scores = re.findall(r'(\d+)\s*/\s*10', st.session_state.final_report)
     if len(scores) >= 3:
         m1, m2, m3 = st.columns(3)
-        m1.metric("Grammar", f"{scores[0]}/10")
-        m2.metric("Tone/Presence", f"{scores[1]}/10")
-        m3.metric("Goal Success", f"{scores[2]}/10")
+        m1.metric("Grammar Accuracy", f"{scores[0]}/10")
+        m2.metric("Professional Tone", f"{scores[1]}/10")
+        m3.metric("Goal Achievement", f"{scores[2]}/10")
     
     st.markdown("---")
     st.markdown(st.session_state.final_report)
     
-    with st.expander("Review Conversation Transcript"):
+    with st.expander("📄 View Full Call Transcript"):
         for m in st.session_state.messages:
-            st.write(f"**{m['role'].upper()}:** {m['content']}")
+            role_name = "COACH / PARTNER" if m["role"] == "assistant" else "YOU"
+            st.write(f"**{role_name}:** {m['content']}")
